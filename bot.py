@@ -16,6 +16,7 @@ Uso:
 """
 import argparse
 import asyncio
+import json
 import os
 import time
 
@@ -178,6 +179,67 @@ async def tui_loop(state, pf, engine, cal, vols, stop):
             await sleep_or_stop(stop, 0.4)
 
 
+def _make_snapshot(state, pf, engine, cal, vols):
+    """Serializa el estado vivo a un dict JSON-able para el visor externo."""
+    ps = pf.stats()
+    obooks = {}
+    for ev in engine.last_evals.values():
+        for token in (ev.get("up_token"), ev.get("dn_token")):
+            if not token:
+                continue
+            ob = state.obooks.get(token)
+            if ob:
+                bids, asks = ob.depth(5)
+                obooks[token] = {
+                    "bids": [[p, s] for p, s in bids],
+                    "asks": [[p, s] for p, s in asks],
+                }
+    return {
+        "ts": time.time(),
+        "pid": os.getpid(),
+        "spot": {sym: state.spot_mid(sym) for sym in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT")},
+        "spot_age_ms": {sym: state.spot_age_ms(sym) for sym in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT")},
+        "obooks": obooks,
+        "engine": {
+            "ticks": engine.ticks,
+            "last_tick_ts": engine.last_tick_ts,
+            "started": engine.started,
+            "scanning": engine.scanning,
+            "last_evals": engine.last_evals,
+            "log": list(engine.log),
+        },
+        "cal": cal.stats(),
+        "pf": {
+            **ps,
+            "equity_hist": list(pf.equity_hist),
+            "positions": [
+                {"slug": p.slug, "side": p.side, "price": p.price,
+                 "stake": p.stake, "fair_p": p.fair_p, "edge": p.edge}
+                for p in pf.positions.values()
+            ],
+            "recent": list(pf.recent),
+        },
+        "vols": {
+            sym: {"sigma_per_sec": v.sigma_per_sec, "ready": v.ready()}
+            for sym, v in vols.items()
+        },
+    }
+
+
+async def snapshot_loop(state, pf, engine, cal, vols, stop):
+    """Escribe data/snapshot.json cada segundo para que watch.py lo lea."""
+    while not stop.is_set():
+        try:
+            snap = _make_snapshot(state, pf, engine, cal, vols)
+            tmp = "data/snapshot.json.tmp"
+            with open(tmp, "w") as f:
+                json.dump(snap, f)
+            os.replace(tmp, "data/snapshot.json")
+        except Exception:  # noqa: BLE001
+            pass
+        await sleep_or_stop(stop, 1.0)
+
+
 async def headless_loop(pf, engine, stop):
     while not stop.is_set():
         await sleep_or_stop(stop, 15)
@@ -215,6 +277,7 @@ async def main(use_tui=True, duration=None):
             asyncio.create_task(recalib_loop(cal, stop)),
             asyncio.create_task(equity_loop(pf, stop)),
             asyncio.create_task(lock_loop(stop)),
+            asyncio.create_task(snapshot_loop(state, pf, engine, cal, vols, stop)),
             asyncio.create_task(
                 tui_loop(state, pf, engine, cal, vols, stop) if use_tui
                 else headless_loop(pf, engine, stop)),

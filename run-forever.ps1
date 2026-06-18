@@ -5,9 +5,9 @@
 # Uso:   .\run-forever.ps1
 # Frenar: Ctrl+C
 #
-# Para VER el bot mientras corre asi, abrir OTRA terminal y usar el viewer:
-#   venv\Scripts\python.exe bot.py            (NO: levantaria un segundo bot)
-# En su lugar mira los logs:  Get-Content data\watchdog.log -Wait -Tail 20
+# Para VER el bot mientras corre asi, abrir OTRA terminal y correr el visor:
+#   venv\Scripts\python.exe watch.py          (TUI en tiempo real, sin lock)
+# O mirar los logs: Get-Content data\watchdog.log -Wait -Tail 20
 #
 # IMPORTANTE: corré UNA sola instancia (el lock data\bot.lock lo protege).
 
