@@ -260,6 +260,7 @@ async def main(use_tui=True, duration=None):
     state = LiveState()
     pf = PaperPortfolio(storage)
     cal = Calibrator()
+    cal.load_state()
     symbols = sorted(set(config.ASSETS.values()))
     vols = {sym: VolEstimator(config.VOL_HALFLIFE_SEC) for sym in symbols}
     engine = StrategyEngine(state, pf, cal, vols, storage)

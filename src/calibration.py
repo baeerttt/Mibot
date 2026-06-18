@@ -12,11 +12,15 @@ MUTATION_WINDOW apuestas y ajusta kelly_fraction y min_edge.
 El ajuste es acotado para no volverse erratico. La estrategia usa
 cal.kelly_fraction y cal.min_edge en lugar de los valores fijos de config.
 """
+import json
+import os
 import time
 from collections import deque, defaultdict
 
 from src.fair_value import prob_up_m
 import config
+
+STATE_PATH = "data/calibrator_state.json"
 
 K_GRID = [round(0.5 + 0.05 * i, 2) for i in range(31)]  # 0.50 .. 2.00
 
@@ -84,6 +88,7 @@ class Calibrator:
         self.last_brier = self._brier_at(self.k)
         self.last_recalib_ts = time.time()
         self.n_recalibs += 1
+        self.save_state()
 
     # --- mutacion genetica ---
 
@@ -110,6 +115,51 @@ class Calibrator:
         self.generation += 1
         self._n_since_mutation = 0
         self.last_mutation_ts = time.time()
+        self.save_state()
+
+    # --- persistencia ---
+
+    def save_state(self):
+        state = {
+            "k": self.k, "k_prev": self.k_prev,
+            "n_recalibs": self.n_recalibs,
+            "last_recalib_ts": self.last_recalib_ts,
+            "last_brier": self.last_brier,
+            "kelly_fraction": self.kelly_fraction,
+            "min_edge": self.min_edge,
+            "generation": self.generation,
+            "last_mutation_ts": self.last_mutation_ts,
+            "last_wr_at_mutation": self.last_wr_at_mutation,
+            "n_since_mutation": self._n_since_mutation,
+            "recent_outcomes": list(self._recent_outcomes),
+        }
+        try:
+            tmp = STATE_PATH + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(state, f)
+            os.replace(tmp, STATE_PATH)
+        except Exception:
+            pass
+
+    def load_state(self):
+        try:
+            with open(STATE_PATH) as f:
+                s = json.load(f)
+            self.k = s.get("k", 1.0)
+            self.k_prev = s.get("k_prev", 1.0)
+            self.n_recalibs = s.get("n_recalibs", 0)
+            self.last_recalib_ts = s.get("last_recalib_ts", 0.0)
+            self.last_brier = s.get("last_brier")
+            self.kelly_fraction = s.get("kelly_fraction", config.KELLY_FRACTION)
+            self.min_edge = s.get("min_edge", config.MIN_EDGE)
+            self.generation = s.get("generation", 1)
+            self.last_mutation_ts = s.get("last_mutation_ts", 0.0)
+            self.last_wr_at_mutation = s.get("last_wr_at_mutation")
+            self._n_since_mutation = s.get("n_since_mutation", 0)
+            self._recent_outcomes = deque(s.get("recent_outcomes", []),
+                                          maxlen=MUTATION_WINDOW)
+        except (FileNotFoundError, json.JSONDecodeError, KeyError):
+            pass  # primera vez: usa defaults
 
     # --- stats ---
 
