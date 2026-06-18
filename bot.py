@@ -116,8 +116,10 @@ async def settle_loop(storage, state, pf, cal, engine, stop):
             if o and c:
                 outcome = "up" if c > o else "down"
                 had = pf.has_position(slug)
-                pf.settle_market(slug, outcome)
+                wins = pf.settle_market(slug, outcome)
                 cal.label(slug, outcome == "up")
+                for won in wins:
+                    cal.record_bet_outcome(won)
                 storage.put("resolution", (slug, mk.asset, mk.window_start_ts,
                                            mk.window_end_ts, outcome.capitalize(),
                                            now_ms(), "spot"))

@@ -1,23 +1,35 @@
 """
-Calibrador online — la pieza de "aprender de los errores", deliberadamente ACOTADA.
+Calibrador online + mutacion genetica.
 
-En vez de 60 perillas, ajusta UN parametro: el multiplicador k de la volatilidad.
-Si el modelo es sobreconfiado (probabilidades muy extremas para lo que realmente
-pasa), subir k acerca las probabilidades a 0.5 y baja el Brier; si es subconfiado,
-baja k. Se re-estima por grid search minimizando el Brier sobre una ventana movil
-de predicciones ya resueltas. Out-of-sample: solo usa mercados ya cerrados.
+Calibrador de vol: ajusta UN parametro k (multiplicador de sigma) minimizando
+el Brier sobre una ventana movil de predicciones ya resueltas (OOS).
+
+Mutacion genetica (inspirada en CerberoMemory de Antigravity): cada
+MUTATION_THRESHOLD apuestas liquidadas, evalua el win_rate de las ultimas
+MUTATION_WINDOW apuestas y ajusta kelly_fraction y min_edge.
+  - win_rate < 45%  -> mas conservador (sube edge minimo, baja Kelly)
+  - win_rate > 65%  -> mas agresivo    (baja edge minimo, sube Kelly)
+El ajuste es acotado para no volverse erratico. La estrategia usa
+cal.kelly_fraction y cal.min_edge en lugar de los valores fijos de config.
 """
+import time
 from collections import deque, defaultdict
 
 from src.fair_value import prob_up_m
+import config
 
 K_GRID = [round(0.5 + 0.05 * i, 2) for i in range(31)]  # 0.50 .. 2.00
+
+MUTATION_WINDOW    = 20    # ultimas N apuestas para medir win_rate
+MUTATION_THRESHOLD = 10    # recalcular cada N apuestas liquidadas
+KELLY_MIN, KELLY_MAX = 0.10, 0.50
+EDGE_MIN,  EDGE_MAX  = 0.02, 0.15
 
 
 class Calibrator:
     def __init__(self, min_samples=60, max_per_market=5):
         self.k = 1.0
-        self.buffer = deque(maxlen=3000)          # (m, tau, sigma, y)  y=1 si Up gano
+        self.buffer = deque(maxlen=3000)          # (m, tau, sigma, y)
         self.pending = defaultdict(list)          # slug -> [(m, tau, sigma)]
         self.min_samples = min_samples
         self.max_per_market = max_per_market
@@ -25,22 +37,32 @@ class Calibrator:
         self.last_recalib_ts = 0.0
         self.n_recalibs = 0
         self.k_prev = 1.0
+        # parametros geneticos — parten de config y mutan con performance
+        self.kelly_fraction = config.KELLY_FRACTION
+        self.min_edge = config.MIN_EDGE
+        # estado de mutacion
+        self._recent_outcomes: deque = deque(maxlen=MUTATION_WINDOW)
+        self._n_since_mutation: int = 0
+        self.generation = 1
+        self.last_mutation_ts = 0.0
+        self.last_wr_at_mutation: float | None = None
+
+    # --- calibracion de vol (k) ---
 
     def observe(self, slug, m, tau, sigma):
-        """Registra una prediccion (aun sin etiqueta) para este mercado."""
+        """Registra una prediccion pendiente de etiqueta."""
         lst = self.pending[slug]
         if len(lst) < self.max_per_market and tau > 5 and sigma:
             lst.append((m, tau, sigma))
 
     def label(self, slug, outcome_up: bool):
-        """Etiqueta las predicciones pendientes del mercado con su resultado real."""
+        """Etiqueta con el resultado real las predicciones pendientes del mercado."""
         y = 1.0 if outcome_up else 0.0
         for (m, tau, sigma) in self.pending.pop(slug, []):
             self.buffer.append((m, tau, sigma, y))
 
     def _brier_at(self, k) -> float | None:
-        n = 0
-        s = 0.0
+        n, s = 0, 0.0
         for (m, tau, sigma, y) in self.buffer:
             p = prob_up_m(m, tau, sigma * k)
             if p is None:
@@ -57,14 +79,48 @@ class Calibrator:
             b = self._brier_at(k)
             if b is not None and (best_b is None or b < best_b):
                 best_b, best_k = b, k
-        import time
         self.k_prev = self.k
-        self.k = 0.7 * self.k + 0.3 * best_k   # cambio suavizado
+        self.k = 0.7 * self.k + 0.3 * best_k    # cambio suavizado
         self.last_brier = self._brier_at(self.k)
         self.last_recalib_ts = time.time()
         self.n_recalibs += 1
 
+    # --- mutacion genetica ---
+
+    def record_bet_outcome(self, won: bool):
+        """Llamado por settle_loop tras liquidar cada apuesta. Dispara mutacion si corresponde."""
+        self._recent_outcomes.append(won)
+        self._n_since_mutation += 1
+        if (self._n_since_mutation >= MUTATION_THRESHOLD and
+                len(self._recent_outcomes) >= MUTATION_THRESHOLD):
+            self._mutate()
+
+    def _mutate(self):
+        wins = sum(self._recent_outcomes)
+        wr = wins / len(self._recent_outcomes)
+        self.last_wr_at_mutation = wr
+
+        if wr < 0.45:
+            self.kelly_fraction = max(KELLY_MIN, self.kelly_fraction - 0.025)
+            self.min_edge = min(EDGE_MAX, self.min_edge + 0.005)
+        elif wr > 0.65:
+            self.kelly_fraction = min(KELLY_MAX, self.kelly_fraction + 0.025)
+            self.min_edge = max(EDGE_MIN, self.min_edge - 0.003)
+
+        self.generation += 1
+        self._n_since_mutation = 0
+        self.last_mutation_ts = time.time()
+
+    # --- stats ---
+
     def stats(self):
-        return {"k": self.k, "k_prev": self.k_prev, "model_brier": self.last_brier,
-                "n": len(self.buffer), "n_recalibs": self.n_recalibs,
-                "last_recalib_ts": self.last_recalib_ts}
+        return {
+            "k": self.k, "k_prev": self.k_prev, "model_brier": self.last_brier,
+            "n": len(self.buffer), "n_recalibs": self.n_recalibs,
+            "last_recalib_ts": self.last_recalib_ts,
+            "generation": self.generation,
+            "kelly_fraction": self.kelly_fraction,
+            "min_edge": self.min_edge,
+            "last_mutation_ts": self.last_mutation_ts,
+            "last_wr_at_mutation": self.last_wr_at_mutation,
+        }

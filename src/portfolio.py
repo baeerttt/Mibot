@@ -99,6 +99,9 @@ class PaperPortfolio:
     def daily_limit_hit(self) -> bool:
         return self.day_pnl <= -config.DAILY_LOSS_LIMIT_PCT * self.start
 
+    def soft_drawdown_hit(self) -> bool:
+        return self.day_pnl <= -config.SOFT_DRAWDOWN_PCT * self.start
+
     def has_position(self, slug: str) -> bool:
         return any(p.slug == slug for p in self.positions.values())
 
@@ -121,8 +124,10 @@ class PaperPortfolio:
                                  "open", None, None, None))
         return pos
 
-    def settle_market(self, slug: str, outcome: str):
-        """Liquida todas las posiciones abiertas de un mercado. outcome: 'up'|'down'."""
+    def settle_market(self, slug: str, outcome: str) -> list[bool]:
+        """Liquida todas las posiciones abiertas de un mercado. outcome: 'up'|'down'.
+        Retorna lista de bool (True=win) por cada posicion liquidada."""
+        results = []
         for uid, pos in list(self.positions.items()):
             if pos.slug != slug:
                 continue
@@ -144,6 +149,8 @@ class PaperPortfolio:
                 "UPDATE bets SET status='settled', ts_settle=?, outcome=?, pnl=? WHERE bet_uid=?",
                 (now_ms(), outcome, pnl, uid))
             self.positions.pop(uid, None)
+            results.append(win)
+        return results
 
     def snapshot_equity(self):
         if not self.equity_hist:
@@ -160,4 +167,5 @@ class PaperPortfolio:
             "up_bets": self.up_bets, "down_bets": self.down_bets,
             "win_rate": self.win_rate, "brier": self.brier, "roi": self.roi,
             "day_pnl": self.day_pnl, "halted": self.daily_limit_hit(),
+            "soft_warn": self.soft_drawdown_hit(),
         }

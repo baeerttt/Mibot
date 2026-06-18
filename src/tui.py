@@ -129,11 +129,16 @@ def _account(pf):
         _kv("expuesto", _money(s["open_exposure"])),
         _kv("abiertas", str(s["n_open"])),
     )
+    if s["halted"]:
+        status_txt, status_sty = " ⛔ STOP", "bold red1"
+    elif s["soft_warn"]:
+        status_txt, status_sty = " ⚠ ALERTA -5%", f"bold {AMBER}"
+    else:
+        status_txt, status_sty = " ● activo", "green3"
     g.add_row(
         _kv("P&L día", _money(s["day_pnl"], True), f"bold {_col(s['day_pnl'])}"),
         _kv("límite día", _pct(-config.DAILY_LOSS_LIMIT_PCT)),
-        Text(" ⛔ STOP" if s["halted"] else " ● activo",
-             style="bold red1" if s["halted"] else "green3"),
+        Text(status_txt, style=status_sty),
     )
     spark = _spark(list(pf.equity_hist))
     body = Table.grid(expand=True)
@@ -177,6 +182,16 @@ def _perf(pf, cal, vol):
     g.add_row(_kv("recalibraciones", str(cs["n_recalibs"])),
               _kv("últ. aprendizaje", _ago(cs["last_recalib_ts"])))
 
+    wr_mut = f"{cs['last_wr_at_mutation']*100:.1f}%" if cs["last_wr_at_mutation"] is not None else "—"
+    g.add_row(
+        _kv(f"gen {cs['generation']}  kelly", f"{cs['kelly_fraction']:.3f}", "bold orange1"),
+        _kv("min edge (gen)", _pct(cs["min_edge"]), "bold orange1"),
+    )
+    g.add_row(
+        _kv("últ. mutación", _ago(cs["last_mutation_ts"]) if cs["last_mutation_ts"] else "nunca"),
+        _kv("wr al mutar", wr_mut),
+    )
+
     note = Text("Brier: 0=perfecto · 0.25=azar · menor es mejor", style="grey50 italic")
     body = Table.grid(expand=True)
     body.add_row(g)
@@ -186,30 +201,41 @@ def _perf(pf, cal, vol):
 
 
 # ---------- scan table (lo que esta analizando) ----------
-def _scan(engine):
+def _scan(engine, cal):
     t = Table(expand=True, box=box.SIMPLE_HEAD, style=BG, header_style=f"bold {AMBER}",
               pad_edge=False)
     t.add_column("MERCADO", justify="left", no_wrap=True)
     t.add_column("cierra", justify="right")
     t.add_column("mov%", justify="right")
     t.add_column("FAIR", justify="right")
-    t.add_column("impl ↑", justify="right")
-    t.add_column("impl ↓", justify="right")
     t.add_column("edge ↑", justify="right")
     t.add_column("edge ↓", justify="right")
+    t.add_column("conf ↑", justify="right")
+    t.add_column("conf ↓", justify="right")
     t.add_column("SEÑAL", justify="center")
 
+    min_edge = cal.min_edge
     evs = sorted(engine.last_evals.values(), key=lambda e: e["tau"] or 9e9)
     if not evs:
         t.add_row("[grey50]esperando mercados BTC activos + warm-up de volatilidad…[/]",
                   "", "", "", "", "", "", "", "")
     for ev in evs[:9]:
         eu, ed = ev["edge_up"], ev["edge_dn"]
+        cu, cd = ev.get("conf_up"), ev.get("conf_dn")
         sig = Text("—", style="grey50")
-        if eu is not None and eu >= config.MIN_EDGE and eu <= config.MAX_EDGE_TRUST:
+        if eu is not None and eu >= min_edge and eu <= config.MAX_EDGE_TRUST and (cu or 0) >= config.MIN_CONFIDENCE:
             sig = Text("▲ UP", style="bold black on green3")
-        elif ed is not None and ed >= config.MIN_EDGE and ed <= config.MAX_EDGE_TRUST:
+        elif ed is not None and ed >= min_edge and ed <= config.MAX_EDGE_TRUST and (cd or 0) >= config.MIN_CONFIDENCE:
             sig = Text("▼ DOWN", style="bold black on red1")
+        elif (eu is not None and eu >= min_edge) or (ed is not None and ed >= min_edge):
+            sig = Text("~ débil", style=f"bold {AMBER}")
+
+        def _conf_cell(c):
+            if c is None:
+                return Text("—", style="grey50")
+            sty = "green3" if c >= config.MIN_CONFIDENCE else "grey62"
+            return Text(f"{c:.2f}", style=sty)
+
         name = ev["slug"].replace("-updown", "").rsplit("-", 1)[0]
         mov = ev["m"] * 100
         t.add_row(
@@ -217,10 +243,10 @@ def _scan(engine):
             _mmss(ev["tau"]),
             Text(f"{mov:+.3f}", style=_col(mov)),
             f"[cyan1]{ev['fair_p']:.3f}[/]",
-            f"{ev['mid_up']:.2f}" if ev["mid_up"] else "—",
-            f"{ev['mid_dn']:.2f}" if ev["mid_dn"] else "—",
             Text(_pct(eu, True) if eu is not None else "—", style=_col(eu) if eu is not None else "grey50"),
             Text(_pct(ed, True) if ed is not None else "—", style=_col(ed) if ed is not None else "grey50"),
+            _conf_cell(cu),
+            _conf_cell(cd),
             sig,
         )
     return Panel(t, title="[bold orange1]ANÁLISIS EN VIVO  ·  ESCANEANDO MERCADOS[/]",
@@ -339,7 +365,7 @@ def render(state, pf, engine, cal, vol):
 
     root["top"].update(_topbar(state, engine, cal))
     root["account"].update(_account(pf))
-    root["scan"].update(_scan(engine))
+    root["scan"].update(_scan(engine, cal))
     root["perf"].update(_perf(pf, cal, vol))
     root["books"].update(_books(state, engine))
     root["positions"].update(_positions(pf))

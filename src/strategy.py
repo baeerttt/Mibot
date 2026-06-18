@@ -1,15 +1,18 @@
 """
-Motor de estrategia — edge de lag spot↔implicito, con todas las barandas.
+Motor de estrategia — edge de lag spot<->implicito, con todas las barandas.
 
 Por cada mercado BTC Up/Down activo:
   1. fair_p = P(Up) del modelo (spot vs open, vol calibrada).
   2. edge_up   = fair_p     - ask_up      (comprar Up si esta barato)
      edge_down = (1-fair_p) - ask_down    (comprar Down si esta barato)
-  3. Si el mejor edge supera MIN_EDGE (y no es absurdo), dimensiona con
-     fraccion de Kelly topeada y abre la apuesta paper.
+  3. Score de confianza 4-factor (edge, liquidez, spread).
+  4. Si el mejor edge supera cal.min_edge y la confianza supera MIN_CONFIDENCE,
+     dimensiona con fraccion de Kelly (cal.kelly_fraction, topeada) y abre la apuesta.
 
 Cada decision pasa por hard-gates: limite diario, max concurrentes, una apuesta
 por ventana, frescura de datos (kill-switch), tiempo restante, spread, liquidez.
+Los parametros de Kelly y edge minimo son adaptados por la mutacion genetica del
+Calibrator segun el win_rate OOS.
 """
 import math
 import time
@@ -27,10 +30,9 @@ class StrategyEngine:
         self.cal = calibrator
         self.vol = vol
         self.storage = storage
-        self.last_evals: dict[str, dict] = {}   # slug -> ultimo eval (para el TUI)
-        self.log = deque(maxlen=40)              # eventos recientes (para el TUI)
+        self.last_evals: dict[str, dict] = {}
+        self.log = deque(maxlen=40)
         self._last_pred_log: dict[str, float] = {}
-        # --- metricas de actividad (para el dashboard: probar que esta vivo y aprendiendo) ---
         self.started = time.time()
         self.ticks = 0
         self.n_evals = 0
@@ -50,10 +52,18 @@ class StrategyEngine:
             out.append(mk)
         return out
 
+    def _confidence(self, edge: float, ask: float, bid, asz) -> float:
+        """Score 0-1 combinando edge (50%), liquidez (25%) y spread (25%)."""
+        min_e = self.cal.min_edge
+        spread = (ask - bid) if bid else config.MAX_SPREAD
+        edge_f = min(1.0, edge / (3.0 * min_e)) if (edge > 0 and min_e > 0) else 0.0
+        liq_f  = min(1.0, (asz or 0) / 500.0)
+        spr_f  = max(0.0, 1.0 - spread / config.MAX_SPREAD)
+        return round(0.50 * edge_f + 0.25 * liq_f + 0.25 * spr_f, 3)
+
     def tick(self):
         self.ticks += 1
         self.last_tick_ts = time.time()
-        # gates globales
         halted = self.pf.daily_limit_hit()
         full = self.pf.n_open >= config.MAX_CONCURRENT
         trad = self._tradable()
@@ -67,7 +77,6 @@ class StrategyEngine:
                 self.last_evals[mk.slug] = ev
                 if not halted and not full:
                     self._maybe_bet(mk, ev)
-        # limpiar evals de mercados que ya cerraron (que no quede basura en el scan)
         for slug in list(self.last_evals):
             if slug not in active:
                 self.last_evals.pop(slug, None)
@@ -93,23 +102,26 @@ class StrategyEngine:
         dn_ob = s.obooks.get(mk.down_token_id)
         up = up_ob.top() if up_ob else (None,) * 5
         dn = dn_ob.top() if dn_ob else (None,) * 5
-        ask_up, asz_up, mid_up = up[1], up[3], up[4]
-        ask_dn, asz_dn, mid_dn = dn[1], dn[3], dn[4]
+        bid_up, ask_up, _, asz_up, mid_up = up
+        bid_dn, ask_dn, _, asz_dn, mid_dn = dn
 
         edge_up = (fair_p - ask_up) if ask_up else None
         edge_dn = ((1 - fair_p) - ask_dn) if ask_dn else None
+
+        conf_up = self._confidence(edge_up, ask_up, bid_up, asz_up) if edge_up is not None else None
+        conf_dn = self._confidence(edge_dn, ask_dn, bid_dn, asz_dn) if edge_dn is not None else None
 
         ev = {
             "slug": mk.slug, "asset": mk.asset, "interval": mk.interval,
             "window_end": mk.window_end_ts, "tau": tau, "m": m, "sigma": sigma_base,
             "fair_p": fair_p, "spot_open": spot_open, "spot_now": spot_now,
             "ask_up": ask_up, "ask_dn": ask_dn, "asz_up": asz_up, "asz_dn": asz_dn,
-            "bid_up": up[0], "bid_dn": dn[0], "mid_up": mid_up, "mid_dn": mid_dn,
+            "bid_up": bid_up, "bid_dn": bid_dn, "mid_up": mid_up, "mid_dn": mid_dn,
             "edge_up": edge_up, "edge_dn": edge_dn,
+            "conf_up": conf_up, "conf_dn": conf_dn,
             "up_token": mk.up_token_id, "dn_token": mk.down_token_id,
         }
 
-        # log periodico de prediccion + alimentar calibrador (cada ~5s)
         last = self._last_pred_log.get(mk.slug, 0)
         if time.time() - last >= 5:
             self._last_pred_log[mk.slug] = time.time()
@@ -125,23 +137,29 @@ class StrategyEngine:
             return
         if ev["tau"] < config.MIN_TIME_LEFT_SEC:
             return
-        # kill-switch por frescura de datos (None = sin datos = stale; 0ms es fresco)
         spot_age = self.state.spot_age_ms(mk.symbol)
         if spot_age is None or spot_age > config.STALE_SPOT_MS:
             return
 
-        # elegir el lado con mejor edge
+        # usar parametros geneticos (adaptativos) del calibrador
+        min_edge = self.cal.min_edge
+        kelly_frac = self.cal.kelly_fraction
+
         cands = []
         if ev["edge_up"] is not None:
-            cands.append(("up", ev["fair_p"], ev["ask_up"], ev["bid_up"], ev["asz_up"], ev["edge_up"], mk.up_token_id))
+            cands.append(("up", ev["fair_p"], ev["ask_up"], ev["bid_up"],
+                          ev["asz_up"], ev["edge_up"], ev["conf_up"], mk.up_token_id))
         if ev["edge_dn"] is not None:
-            cands.append(("down", 1 - ev["fair_p"], ev["ask_dn"], ev["bid_dn"], ev["asz_dn"], ev["edge_dn"], mk.down_token_id))
+            cands.append(("down", 1 - ev["fair_p"], ev["ask_dn"], ev["bid_dn"],
+                          ev["asz_dn"], ev["edge_dn"], ev["conf_dn"], mk.down_token_id))
         cands.sort(key=lambda c: c[5], reverse=True)
         if not cands:
             return
-        side, p_side, ask, bid, asz, edge, token = cands[0]
+        side, p_side, ask, bid, asz, edge, conf, token = cands[0]
 
-        if edge < config.MIN_EDGE or edge > config.MAX_EDGE_TRUST:
+        if edge < min_edge or edge > config.MAX_EDGE_TRUST:
+            return
+        if conf is None or conf < config.MIN_CONFIDENCE:
             return
         if not ask or ask >= 0.99 or not asz:
             return
@@ -151,12 +169,11 @@ class StrategyEngine:
         if bid and (ask - bid) > config.MAX_SPREAD:
             return
 
-        # sizing: fraccion de Kelly topeada
         f_star = (p_side - ask) / (1 - ask)
-        frac = max(0.0, min(config.KELLY_FRACTION * f_star, config.MAX_BET_PCT))
+        frac = max(0.0, min(kelly_frac * f_star, config.MAX_BET_PCT))
         stake = self.pf.equity * frac
         shares = stake / ask
-        shares = min(shares, asz)            # no exceder la liquidez en el mejor ask
+        shares = min(shares, asz)
         stake = shares * ask
         if stake < config.MIN_BET:
             return
@@ -166,4 +183,4 @@ class StrategyEngine:
             self.last_bet_ts = time.time()
             self.log.appendleft(
                 f"BET {side.upper():4} {mk.interval} {mk.slug.split('-')[0]} @ {ask:.2f} "
-                f"${stake:5.0f} edge {edge*100:4.1f}% p {p_side:.2f}")
+                f"${stake:5.0f} edge {edge*100:4.1f}% conf {conf:.2f}")

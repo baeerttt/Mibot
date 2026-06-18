@@ -50,9 +50,13 @@ KELLY_FRACTION = 0.25        # quarter-Kelly (conservador)
 MAX_BET_PCT = 0.02          # tope por apuesta: 2% del bankroll
 MIN_BET = 5.0               # apuesta minima en $
 
+# --- Score de confianza 4-factor (edge, liquidez, spread) ---
+MIN_CONFIDENCE = 0.35        # score minimo para apostar (0=nulo, 1=maximo)
+
 # --- Barandas de riesgo (hard gates) ---
 MAX_CONCURRENT = 3          # posiciones abiertas simultaneas
 DAILY_LOSS_LIMIT_PCT = 0.08 # si el dia pierde 8% del bankroll -> stop hasta manana
+SOFT_DRAWDOWN_PCT  = 0.05   # alerta suave antes del hard stop 8%
 MAX_SPREAD = 0.05           # no operar si el spread del lado a comprar supera esto
 MIN_TIME_LEFT_SEC = 30      # no abrir con menos de 30s para el cierre
 ONE_BET_PER_MARKET = True   # una sola posicion por ventana
