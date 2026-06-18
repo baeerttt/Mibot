@@ -118,6 +118,7 @@ CREATE TABLE IF NOT EXISTS predictions (
     outcome     TEXT          -- se completa al cerrar (NULL hasta entonces)
 );
 CREATE INDEX IF NOT EXISTS idx_pred_slug ON predictions(slug);
+CREATE INDEX IF NOT EXISTS idx_pred_ts ON predictions(ts);
 """
 
 _INSERTS = {
