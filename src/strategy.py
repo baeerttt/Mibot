@@ -160,7 +160,11 @@ class StrategyEngine:
             return
         side, p_side, ask, bid, asz, edge, conf, token = cands[0]
 
-        if edge < min_edge or edge > config.MAX_EDGE_TRUST:
+        # El edge NETO (despues del costo de ejecucion) es el que tiene que valer.
+        # Asi no apostamos cuando el spread/slippage se come la ventaja.
+        cost = config.EXEC_COST
+        net_edge = edge - cost
+        if net_edge < min_edge or edge > config.MAX_EDGE_TRUST:
             return
         if conf is None or conf < config.MIN_CONFIDENCE:
             return
@@ -172,18 +176,24 @@ class StrategyEngine:
         if bid and (ask - bid) > config.MAX_SPREAD:
             return
 
-        f_star = (p_side - ask) / (1 - ask)
+        # Fill conservador: asumimos que pagamos ask+costo, no el ask optimista.
+        ask_eff = ask + cost
+        if ask_eff >= 0.99:
+            return
+        f_star = (p_side - ask_eff) / (1 - ask_eff)
+        if f_star <= 0:
+            return
         frac = max(0.0, min(kelly_frac * f_star, config.MAX_BET_PCT))
         stake = self.pf.equity * frac
-        shares = stake / ask
+        shares = stake / ask_eff
         shares = min(shares, asz)
-        stake = shares * ask
+        stake = shares * ask_eff
         if stake < config.MIN_BET:
             return
 
-        pos = self.pf.open_bet(mk, side, ask, shares, p_side, edge)
+        pos = self.pf.open_bet(mk, side, ask_eff, shares, p_side, net_edge)
         if pos:
             self.last_bet_ts = time.time()
             self.log.appendleft(
-                f"BET {side.upper():4} {mk.interval} {mk.slug.split('-')[0]} @ {ask:.2f} "
-                f"${stake:5.0f} edge {edge*100:4.1f}% conf {conf:.2f}")
+                f"BET {side.upper():4} {mk.interval} {mk.slug.split('-')[0]} @ {ask_eff:.2f} "
+                f"${stake:5.0f} edge {net_edge*100:4.1f}% conf {conf:.2f}")

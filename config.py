@@ -55,6 +55,13 @@ MIN_BET = 5.0               # apuesta minima en $
 # --- Score de confianza 4-factor (edge, liquidez, spread) ---
 MIN_CONFIDENCE = 0.20        # score minimo para apostar (bajado: menos filtro, mas accion)
 
+# --- Costo de ejecucion (clave para rentabilidad) ---
+# Margen sobre el ask que cubre: spread/slippage real + la sobreconfianza del modelo
+# en los casos de edge alto (seleccion adversa). El edge NETO (edge - EXEC_COST) debe
+# superar MIN_EDGE para apostar; ademas el fill paga ask+EXEC_COST (no el ask optimista)
+# y el sizing de Kelly usa ese precio. Asi no se apuesta cuando el costo se come la ventaja.
+EXEC_COST = 0.01            # 1 centavo (spread BTC/ETH ~1c; ajustar con backtest.py)
+
 # --- Barandas de riesgo (hard gates) ---
 # Aun en modo agresivo dejamos un circuit-breaker: protege contra un BUG que dispare
 # cientos de apuestas malas (eso ensuciaria el track record, no es "aprender").

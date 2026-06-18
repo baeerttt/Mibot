@@ -142,13 +142,15 @@ def simulate(rows, cfg: BTConfig) -> BTResult:
             side, p_side, edge = "up", fair_p, edge_up
         else:
             side, p_side, edge = "down", 1 - fair_p, edge_dn
-        if edge < cfg.min_edge or edge > cfg.max_edge_trust:
+        # edge NETO (despues del costo) es el que tiene que superar el umbral
+        net_edge = edge - cfg.cost
+        if net_edge < cfg.min_edge or edge > cfg.max_edge_trust:
             continue
         if open_dir[side] >= cfg.max_corr_per_dir:
             continue
 
         ask = p_side - edge                 # ask realmente cotizado
-        ask_eff = ask + cfg.cost            # + costo de ejecucion
+        ask_eff = ask + cfg.cost            # fill conservador (paga ask+costo)
         if ask_eff <= 0.01 or ask_eff >= 0.99:
             continue
         f_star = (p_side - ask_eff) / (1 - ask_eff)
