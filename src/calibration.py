@@ -117,6 +117,40 @@ class Calibrator:
         self.last_mutation_ts = time.time()
         self.save_state()
 
+    # --- reconstruccion del cerebro desde la DB ---
+
+    def warm_start_from_db(self, db_path: str) -> int:
+        """Rellena el buffer con TODAS las predicciones ya etiquetadas de la DB
+        y recalibra. Asi el calibrador arranca con todo lo aprendido en vez de
+        desde cero (necesitaba ~60 muestras nuevas antes de poder calibrar)."""
+        import math
+        import sqlite3
+        try:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        except sqlite3.OperationalError:
+            return 0
+        try:
+            rows = conn.execute(
+                "SELECT spot_open, spot_now, tau, sigma, outcome FROM predictions "
+                "WHERE outcome IS NOT NULL AND spot_open IS NOT NULL "
+                "AND spot_now IS NOT NULL AND tau > 5 AND sigma IS NOT NULL "
+                "ORDER BY ts DESC LIMIT ?", (self.buffer.maxlen,)).fetchall()
+        except sqlite3.OperationalError:
+            conn.close()
+            return 0
+        conn.close()
+        n = 0
+        for spot_open, spot_now, tau, sigma, outcome in reversed(rows):
+            if not spot_open or not spot_now or spot_open <= 0 or spot_now <= 0:
+                continue
+            m = math.log(spot_now / spot_open)
+            y = 1.0 if outcome == "up" else 0.0
+            self.buffer.append((m, tau, sigma, y))
+            n += 1
+        if len(self.buffer) >= self.min_samples:
+            self.recalibrate()
+        return n
+
     # --- persistencia ---
 
     def save_state(self):

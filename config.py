@@ -74,4 +74,17 @@ EVAL_INTERVAL_SEC = 1.0     # cada cuanto evalua oportunidades
 VOL_HALFLIFE_SEC = 120      # halflife de la EWMA de volatilidad realizada
 SETTLE_GRACE_SEC = 3        # margen tras el cierre antes de liquidar paper
 
+# ============================================================================
+# PERSISTENCIA / CONTINUIDAD ENTRE REINICIOS
+# ============================================================================
+# El cerebro (buffer de calibracion, k, params geneticos, vol) se reconstruye
+# desde la DB al arrancar. Asi nada de lo aprendido se pierde en un reinicio.
+PERSIST_BRAIN = True         # reconstruir calibrador + warm-start de vol desde la DB
+RECONCILE_ORPHANS = True     # liquidar apuestas 'open' colgadas usando spot historico
+# Continuidad del equity/track-record: True = el PnL se acumula entre reinicios
+# (track record real para el vault). False = arranca limpio en $10k cada vez
+# (util durante el stress-test agresivo para evaluar la generacion actual).
+# Durante el stress-test (hasta 23/6) = False. En produccion = True.
+PERSIST_PORTFOLIO = False
+
 QUIET = False               # bot.py lo pone True para no romper el TUI con prints

@@ -9,6 +9,7 @@ Modelo de una apuesta binaria a precio `a` (el ask que pagamos):
 Trackea bankroll, P&L realizado, win rate, Brier de las apuestas, y el limite de
 perdida diaria. Persiste cada apuesta y la curva de capital a SQLite.
 """
+import sqlite3
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -16,6 +17,24 @@ from datetime import datetime, timezone
 
 import config
 from src.state import now_ms
+
+
+def _ro_conn(db_path):
+    try:
+        c = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        c.execute("PRAGMA busy_timeout=5000")
+        return c
+    except sqlite3.OperationalError:
+        return None
+
+
+def _rw_conn(db_path):
+    try:
+        c = sqlite3.connect(db_path)
+        c.execute("PRAGMA busy_timeout=5000")
+        return c
+    except sqlite3.OperationalError:
+        return None
 
 
 @dataclass
@@ -151,6 +170,107 @@ class PaperPortfolio:
             self.positions.pop(uid, None)
             results.append(win)
         return results
+
+    # --- reconciliacion y reconstruccion al arrancar ---
+
+    def reconcile_orphans(self, db_path: str) -> int:
+        """Liquida apuestas que quedaron 'open' en la DB porque el bot se apago
+        antes de que su ventana cerrara. Usa el spot historico (spot_tick) para
+        derivar el outcome. Asi ninguna apuesta queda colgada sin resolver."""
+        rw = _rw_conn(db_path)
+        if rw is None:
+            return 0
+        settled = 0
+        try:
+            orphans = rw.execute(
+                "SELECT bet_uid, slug, asset, side, price, shares, stake, fair_p "
+                "FROM bets WHERE status='open'").fetchall()
+            for uid, slug, asset, side, price, shares, stake, fair_p in orphans:
+                mk = rw.execute(
+                    "SELECT window_start_ts, window_end_ts FROM markets WHERE slug=?",
+                    (slug,)).fetchone()
+                if not mk:
+                    continue
+                w_start, w_end = mk
+                sym = config.ASSETS.get(asset)
+                if not sym:
+                    continue
+                o = rw.execute(
+                    "SELECT mid FROM spot_tick WHERE symbol=? AND ts>=? "
+                    "ORDER BY ts ASC LIMIT 1", (sym, int(w_start * 1000))).fetchone()
+                c = rw.execute(
+                    "SELECT mid FROM spot_tick WHERE symbol=? AND ts<=? "
+                    "ORDER BY ts DESC LIMIT 1", (sym, int(w_end * 1000))).fetchone()
+                if not o or not c or not o[0] or not c[0]:
+                    continue
+                outcome = "up" if c[0] > o[0] else "down"
+                win = (side == outcome)
+                pnl = shares * (1 - price) if win else -stake
+                rw.execute(
+                    "UPDATE bets SET status='settled', ts_settle=?, outcome=?, pnl=? "
+                    "WHERE bet_uid=?", (now_ms(), outcome, pnl, uid))
+                rw.execute(
+                    "INSERT OR REPLACE INTO resolutions(slug,asset,window_start_ts,"
+                    "window_end_ts,outcome,resolved_at,source) VALUES(?,?,?,?,?,?,?)",
+                    (slug, asset, w_start, w_end, outcome.capitalize(), now_ms(),
+                     "spot_backfill"))
+                settled += 1
+            rw.commit()
+        finally:
+            rw.close()
+        return settled
+
+    def restore_from_db(self, db_path: str) -> int:
+        """Reconstruye el estado del portfolio (PnL, W/L, racha, Brier, recientes)
+        replayando TODAS las apuestas liquidadas de la DB. El track record es
+        continuo entre reinicios en vez de volver a $10k cada vez."""
+        ro = _ro_conn(db_path)
+        if ro is None:
+            return 0
+        try:
+            all_bets = ro.execute(
+                "SELECT side FROM bets").fetchall()
+            settled = ro.execute(
+                "SELECT slug, side, price, shares, stake, fair_p, outcome, pnl, ts_settle "
+                "FROM bets WHERE status='settled' ORDER BY ts_settle ASC").fetchall()
+        finally:
+            ro.close()
+
+        self.n_bets = len(all_bets)
+        self.up_bets = sum(1 for (s,) in all_bets if s == "up")
+        self.down_bets = self.n_bets - self.up_bets
+
+        # medianoche UTC de hoy en ms -> para separar el PnL del dia
+        now = datetime.now(timezone.utc)
+        midnight_ms = int(datetime.combine(
+            now.date(), datetime.min.time(), tzinfo=timezone.utc).timestamp() * 1000)
+
+        self.realized = 0.0
+        self.n_settled = 0
+        self.wins = 0
+        self.brier_sum = 0.0
+        self.streak = 0
+        self.day_start_realized = 0.0
+        self.recent.clear()
+        for slug, side, price, shares, stake, fair_p, outcome, pnl, ts_settle in settled:
+            win = (side == outcome)
+            self.realized += (pnl or 0.0)
+            self.n_settled += 1
+            self.wins += 1 if win else 0
+            if fair_p is not None:
+                self.brier_sum += (fair_p - (1.0 if win else 0.0)) ** 2
+            self.streak = (self.streak + 1) if (win and self.streak >= 0) else \
+                          (self.streak - 1) if (not win and self.streak <= 0) else \
+                          (1 if win else -1)
+            if ts_settle and ts_settle < midnight_ms:
+                self.day_start_realized = self.realized
+            self.recent.appendleft({
+                "slug": slug, "side": side, "outcome": outcome,
+                "price": price, "stake": stake, "pnl": pnl, "win": win,
+            })
+        self.day = now.date()
+        self.equity_hist.append(self.equity)
+        return self.n_settled
 
     def snapshot_equity(self):
         if not self.equity_hist:

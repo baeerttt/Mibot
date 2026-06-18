@@ -179,6 +179,32 @@ async def tui_loop(state, pf, engine, cal, vols, stop):
             await sleep_or_stop(stop, 0.4)
 
 
+def warm_start_vols(vols, db_path: str) -> int:
+    """Prima cada VolEstimator con spot ticks recientes de la DB para que la
+    volatilidad este 'ready' al instante en vez de necesitar ~20s de warm-up."""
+    import sqlite3
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    except sqlite3.OperationalError:
+        return 0
+    n = 0
+    try:
+        for sym, v in vols.items():
+            rows = conn.execute(
+                "SELECT mid, ts FROM (SELECT mid, ts FROM spot_tick WHERE symbol=? "
+                "ORDER BY ts DESC LIMIT 5000) ORDER BY ts ASC", (sym,)).fetchall()
+            for mid, ts in rows:
+                if mid:
+                    v.update(mid, ts)
+            if v.ready():
+                n += 1
+    except sqlite3.OperationalError:
+        pass
+    finally:
+        conn.close()
+    return n
+
+
 def _make_snapshot(state, pf, engine, cal, vols):
     """Serializa el estado vivo a un dict JSON-able para el visor externo."""
     ps = pf.stats()
@@ -263,6 +289,21 @@ async def main(use_tui=True, duration=None):
     cal.load_state()
     symbols = sorted(set(config.ASSETS.values()))
     vols = {sym: VolEstimator(config.VOL_HALFLIFE_SEC) for sym in symbols}
+
+    # --- Reconstruir el cerebro desde la DB (nada de lo aprendido se pierde) ---
+    if config.PERSIST_BRAIN:
+        n_buf = cal.warm_start_from_db(config.DB_PATH)
+        n_vol = warm_start_vols(vols, config.DB_PATH)
+        print(f"[brain] buffer calibracion: {n_buf} muestras  ·  vol warm-start: {n_vol} symbols  ·  k={cal.k:.3f} gen={cal.generation}")
+    if config.RECONCILE_ORPHANS:
+        n_orph = pf.reconcile_orphans(config.DB_PATH)
+        if n_orph:
+            print(f"[reconcile] {n_orph} apuestas huerfanas liquidadas con spot historico")
+    if config.PERSIST_PORTFOLIO:
+        n_rest = pf.restore_from_db(config.DB_PATH)
+        s = pf.stats()
+        print(f"[portfolio] {n_rest} apuestas restauradas  ·  equity=${s['equity']:.2f}  W/L={s['wins']}/{s['losses']}")
+
     engine = StrategyEngine(state, pf, cal, vols, storage)
     stop = asyncio.Event()
 
@@ -294,6 +335,7 @@ async def main(use_tui=True, duration=None):
         finally:
             stop.set()
             await asyncio.gather(*tasks, return_exceptions=True)
+            cal.save_state()        # ultimo guardado del cerebro antes de salir
             await storage.close()
             release_lock()
             s = pf.stats()
