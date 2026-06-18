@@ -152,7 +152,7 @@ def _account(pf):
 def _perf(pf, cal, vol):
     s = pf.stats()
     cs = cal.stats()
-    sigma = vol.sigma_per_sec
+    sigma = vol.sigma_per_sec if vol else None
     sig5 = (sigma * (300 ** 0.5) * 100) if sigma else None
 
     wl = Text()
@@ -347,7 +347,8 @@ def _log(engine):
 
 
 # ---------- ensamblado ----------
-def render(state, pf, engine, cal, vol):
+def render(state, pf, engine, cal, vols):
+    vol = vols.get("BTCUSDT") if isinstance(vols, dict) else vols
     root = Layout()
     root.split_column(
         Layout(name="top", size=4),

@@ -142,11 +142,12 @@ async def strategy_loop(engine, stop):
         await sleep_or_stop(stop, config.EVAL_INTERVAL_SEC)
 
 
-async def vol_loop(state, vol, stop):
+async def vol_loop(state, vols, stop):
     while not stop.is_set():
-        mid = state.spot_mid("BTCUSDT")
-        if mid:
-            vol.update(mid, now_ms())
+        for sym, v in vols.items():
+            mid = state.spot_mid(sym)
+            if mid:
+                v.update(mid, now_ms())
         await sleep_or_stop(stop, 0.5)
 
 
@@ -165,13 +166,13 @@ async def equity_loop(pf, stop):
         pf.snapshot_equity()
 
 
-async def tui_loop(state, pf, engine, cal, vol, stop):
+async def tui_loop(state, pf, engine, cal, vols, stop):
     from rich.live import Live
     from src.tui import render
-    with Live(render(state, pf, engine, cal, vol), screen=True, refresh_per_second=8) as live:
+    with Live(render(state, pf, engine, cal, vols), screen=True, refresh_per_second=8) as live:
         while not stop.is_set():
             try:
-                live.update(render(state, pf, engine, cal, vol))
+                live.update(render(state, pf, engine, cal, vols))
             except Exception as e:  # noqa: BLE001
                 engine.log.appendleft(f"[tui err] {e}")
             await sleep_or_stop(stop, 0.4)
@@ -197,10 +198,10 @@ async def main(use_tui=True, duration=None):
     state = LiveState()
     pf = PaperPortfolio(storage)
     cal = Calibrator()
-    vol = VolEstimator(config.VOL_HALFLIFE_SEC)
-    engine = StrategyEngine(state, pf, cal, vol, storage)
-    stop = asyncio.Event()
     symbols = sorted(set(config.ASSETS.values()))
+    vols = {sym: VolEstimator(config.VOL_HALFLIFE_SEC) for sym in symbols}
+    engine = StrategyEngine(state, pf, cal, vols, storage)
+    stop = asyncio.Event()
 
     async with aiohttp.ClientSession() as session:
         tasks = [
@@ -210,12 +211,12 @@ async def main(use_tui=True, duration=None):
             asyncio.create_task(price_capture_loop(state, stop)),
             asyncio.create_task(settle_loop(storage, state, pf, cal, engine, stop)),
             asyncio.create_task(strategy_loop(engine, stop)),
-            asyncio.create_task(vol_loop(state, vol, stop)),
+            asyncio.create_task(vol_loop(state, vols, stop)),
             asyncio.create_task(recalib_loop(cal, stop)),
             asyncio.create_task(equity_loop(pf, stop)),
             asyncio.create_task(lock_loop(stop)),
             asyncio.create_task(
-                tui_loop(state, pf, engine, cal, vol, stop) if use_tui
+                tui_loop(state, pf, engine, cal, vols, stop) if use_tui
                 else headless_loop(pf, engine, stop)),
         ]
         try:

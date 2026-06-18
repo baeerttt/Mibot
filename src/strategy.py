@@ -24,11 +24,11 @@ from src.state import now_ms
 
 
 class StrategyEngine:
-    def __init__(self, state, portfolio, calibrator, vol, storage):
+    def __init__(self, state, portfolio, calibrator, vols, storage):
         self.state = state
         self.pf = portfolio
         self.cal = calibrator
-        self.vol = vol
+        self.vols = vols          # dict symbol -> VolEstimator (uno por activo)
         self.storage = storage
         self.last_evals: dict[str, dict] = {}
         self.log = deque(maxlen=40)
@@ -83,10 +83,13 @@ class StrategyEngine:
 
     def _evaluate(self, mk):
         s = self.state
+        vol = self.vols.get(mk.symbol)
+        if vol is None:
+            return None
         spot_now = s.spot_mid(mk.symbol)
         spot_open = s.window_open.get(mk.slug)
-        sigma_base = self.vol.sigma_per_sec
-        if spot_now is None or not spot_open or not self.vol.ready():
+        sigma_base = vol.sigma_per_sec
+        if spot_now is None or not spot_open or not vol.ready():
             return None
 
         tau = mk.window_end_ts - time.time()

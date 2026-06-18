@@ -40,23 +40,27 @@ CAPTURE_RAW = False          # guardar mensajes crudos: True solo para depurar (
 # TRADING (PAPER / shadow training) — bankroll ficticio, sin riesgo real
 # ============================================================================
 PAPER_BANKROLL = 10_000.0    # capital ficticio inicial
-TRADE_ASSETS = ("btc",)      # por ahora SOLO Bitcoin Up/Down
+# Modo agresivo: opera los 4 activos liquidos (BTC/ETH/SOL/XRP), no solo BTC.
+# Mas mercados = mas muestras = el sistema genetico aprende mas rapido.
+TRADE_ASSETS = ("btc", "eth", "sol", "xrp")
 TRADE_INTERVALS = ("5m", "15m")
 
-# --- Edge y sizing ---
-MIN_EDGE = 0.04              # edge minimo (fair_p - ask) para abrir una apuesta
+# --- Edge y sizing (agresivo: arriesga mas, junta mas datos) ---
+MIN_EDGE = 0.02             # edge minimo para abrir (bajado: mas trades)
 MAX_EDGE_TRUST = 0.25        # edges mayores = probable error de modelo cerca del cierre -> ignorar
-KELLY_FRACTION = 0.25        # quarter-Kelly (conservador)
-MAX_BET_PCT = 0.02          # tope por apuesta: 2% del bankroll
+KELLY_FRACTION = 0.40        # base de Kelly (la mutacion genetica lo sube/baja 0.10-0.50)
+MAX_BET_PCT = 0.05          # tope por apuesta: 5% del bankroll (apuestas mas grandes)
 MIN_BET = 5.0               # apuesta minima en $
 
 # --- Score de confianza 4-factor (edge, liquidez, spread) ---
-MIN_CONFIDENCE = 0.35        # score minimo para apostar (0=nulo, 1=maximo)
+MIN_CONFIDENCE = 0.20        # score minimo para apostar (bajado: menos filtro, mas accion)
 
 # --- Barandas de riesgo (hard gates) ---
-MAX_CONCURRENT = 3          # posiciones abiertas simultaneas
-DAILY_LOSS_LIMIT_PCT = 0.08 # si el dia pierde 8% del bankroll -> stop hasta manana
-SOFT_DRAWDOWN_PCT  = 0.05   # alerta suave antes del hard stop 8%
+# Aun en modo agresivo dejamos un circuit-breaker: protege contra un BUG que dispare
+# cientos de apuestas malas (eso ensuciaria el track record, no es "aprender").
+MAX_CONCURRENT = 10         # posiciones abiertas simultaneas (4 activos x 2 intervalos)
+DAILY_LOSS_LIMIT_PCT = 0.20 # circuit-breaker: si el dia pierde 20% -> stop hasta manana
+SOFT_DRAWDOWN_PCT  = 0.12   # alerta suave antes del hard stop
 MAX_SPREAD = 0.05           # no operar si el spread del lado a comprar supera esto
 MIN_TIME_LEFT_SEC = 30      # no abrir con menos de 30s para el cierre
 ONE_BET_PER_MARKET = True   # una sola posicion por ventana
