@@ -117,17 +117,34 @@ def main():
     skill_txt = (f"{skill:+.4f}" if skill is not None else "s/d")
     skill_col = "#1d9e75" if (skill or 0) > 0 else "#e24b4a"
 
+    fees_total = d.get("fees_total")
     cards = "".join([
         _card("PnL neto", _money(pnl), "#1d9e75" if pnl >= 0 else "#e24b4a"),
-        _card("ROI", _pct(roi), "#1d9e75" if roi >= 0 else "#e24b4a"),
+        _card("ROI (neto)", _pct(roi), "#1d9e75" if roi >= 0 else "#e24b4a"),
         _card("Win rate", _pct(d["win_rate"], signed=False)),
         _card("Precio medio pagado", f"{d['precio_medio_pagado']:.3f}"),
         _card("Drawdown máx", _pct(d["drawdown_max_frac"], signed=False),
               "#e24b4a" if d["drawdown_max_frac"] > 0.15 else ""),
-        _card("Brier (bot)", f"{d['brier_bot']:.4f}"),
+        _card("Fees pagados", _money(-fees_total) if fees_total is not None else "s/d",
+              "#e24b4a" if fees_total else ""),
         _card("Skill vs mercado", skill_txt, skill_col),
         _card("Apuestas / Predicciones", f"{d['n_bets']:,} / {d['n_predicciones']:,}"),
     ])
+
+    # bloque de costos: bruto -> fee -> neto (taker fee cripto de Polymarket)
+    cost_html = ""
+    if fees_total is not None and d.get("pnl_bruto") is not None:
+        cost_html = (
+            f'<h2>Costos · taker fee de Polymarket (cripto)</h2>'
+            f'<div class="composite" style="font-size:14px">'
+            f'PnL bruto <b>{_money(d["pnl_bruto"])}</b> '
+            f'− fees <b style="color:#e24b4a">{_money(fees_total, signed=False)}</b> '
+            f'({d.get("fee_pct_volumen", 0):.2f}% del volumen) '
+            f'= PnL neto <b style="color:{"#1d9e75" if pnl>=0 else "#e24b4a"}">{_money(pnl)}</b>'
+            f'<div class="muted" style="margin-top:6px">'
+            f'Fee por trade = shares × p × 0.072 × p(1−p). Máximo en p=0.50 (1.80%), '
+            f'casi cero en los extremos. El bot siempre es taker.</div></div>'
+        )
 
     bars = "".join([
         _bar("Brier Score", sc["brier"], wt["brier"], f"{d['brier_bot']:.4f}"),
@@ -194,6 +211,8 @@ code {{ font-family: ui-monospace, Consolas, monospace; color:#d0a85a; word-brea
   <div class="cscore">{comp:.2f} <span style="font-size:16px;color:#9a988f">/ 1.00</span></div>
   <div style="margin-top:12px">{bars}</div>
 </div>
+
+{cost_html}
 
 <h2>Curva de equity</h2>
 <div class="eq">{_equity_svg(equity)}</div>

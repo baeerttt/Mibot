@@ -35,6 +35,7 @@ import time
 from datetime import datetime, timezone
 
 import config
+from src import fees
 
 # --- Pesos del Brier Composite Score (recomendacion DSN Empresas, 19/6/2026) ---
 W_BRIER, W_RENT, W_DD, W_PREDS, W_LIQ, W_CONS = 0.35, 0.20, 0.15, 0.10, 0.10, 0.10
@@ -74,12 +75,16 @@ def _load_bets(conn, since_ms, asset, interval):
         if outcome is None or pnl is None:
             continue
         win = 1 if side == outcome else 0
+        # Fee real de Polymarket (taker, cripto) sobre este trade. El `pnl` guardado
+        # es BRUTO (la logica viva aun no descuenta fee, ver APPLY_FEES_LIVE). Aca lo
+        # descontamos para que la evidencia refleje el costo real: pnl -> NETO.
+        fee = fees.taker_fee(shares, price) if (shares and price) else 0.0
         out.append({
             "ts_open": ts_open, "ts_settle": ts_settle, "slug": slug,
             "asset": asset_, "interval": interval_, "side": side,
             "price": price, "shares": shares, "stake": stake,
             "fair_p": fair_p, "edge": edge, "outcome": outcome,
-            "win": win, "pnl": pnl,
+            "win": win, "pnl_gross": pnl, "fee": fee, "pnl": pnl - fee,
         })
     return out
 
@@ -211,12 +216,16 @@ def main():
         print("Sin apuestas liquidadas para ese filtro.")
         return
 
-    # --- metricas crudas ---
+    # --- metricas crudas (pnl ya es NETO de fees) ---
     n = len(bets)
     wins = sum(b["win"] for b in bets)
     win_rate = wins / n
-    pnl = sum(b["pnl"] for b in bets)
+    pnl_gross = sum(b["pnl_gross"] for b in bets)
+    fees_total = sum(b["fee"] for b in bets)
+    pnl = sum(b["pnl"] for b in bets)          # neto
     roi = pnl / start
+    roi_gross = pnl_gross / start
+    vol_total = sum(b["stake"] for b in bets)  # notional operado (para % fee)
     brier_bot, brier_mkt, skill = _brier(bets)
     curve, dd_abs, dd_frac = _drawdown(bets, start)
     n_preds = _n_predictions(conn, since_ms, args.asset, args.interval)
@@ -262,6 +271,14 @@ def main():
     print(f"  {'BRIER COMPOSITE SCORE':<24}{'':<16}{composite:>10.2f}{'/1.00':>8}")
     print("=" * 68)
 
+    # --- costos: bruto vs fees vs neto (taker fee cripto de Polymarket) ---
+    fee_pct = (fees_total / vol_total * 100) if vol_total else 0.0
+    print("\n  COSTOS (Polymarket taker fee, cripto):")
+    print(f"    PnL bruto       = ${pnl_gross:+.2f}   (ROI {_pct(roi_gross)})")
+    print(f"    Fees pagados    = -${fees_total:.2f}   ({fee_pct:.2f}% del volumen, "
+          f"${fees_total/n:.3f}/trade)")
+    print(f"    PnL NETO        = ${pnl:+.2f}   (ROI {_pct(roi)})  <- lo que importa")
+
     # --- skill real vs mercado ---
     print("\n  SKILL vs MERCADO (sobre las apuestas tomadas):")
     print(f"    Brier bot    = {brier_bot:.4f}")
@@ -297,6 +314,9 @@ def main():
         "filtros": {"since": args.since, "asset": args.asset, "interval": args.interval},
         "n_bets": n, "n_predicciones": n_preds,
         "win_rate": win_rate, "precio_medio_pagado": _avg_price(bets),
+        "pnl_bruto": pnl_gross, "roi_bruto": roi_gross,
+        "fees_total": fees_total, "fee_pct_volumen": fee_pct,
+        "volumen_operado": vol_total,
         "pnl_neto": pnl, "roi": roi, "equity_final": start + pnl,
         "brier_bot": brier_bot, "brier_mercado": brier_mkt, "skill_vs_mercado": skill,
         "drawdown_max_frac": dd_frac, "drawdown_max_abs": dd_abs,
@@ -336,14 +356,15 @@ def _write_csv(bets, curve, start):
         w = csv.writer(f)
         w.writerow(["ts_open_utc", "ts_settle_utc", "asset", "interval", "side",
                     "price", "shares", "stake", "fair_p", "edge", "outcome",
-                    "win", "pnl", "equity", "drawdown"])
+                    "win", "pnl_bruto", "fee", "pnl_neto", "equity", "drawdown"])
         for b, (equity, dd) in zip(bets, curve):
             w.writerow([_iso(b["ts_open"]), _iso(b["ts_settle"]), b["asset"],
                         b["interval"], b["side"], f"{b['price']:.4f}",
                         f"{b['shares']:.4f}", f"{b['stake']:.4f}",
                         f"{b['fair_p']:.4f}" if b["fair_p"] is not None else "",
                         f"{b['edge']:.4f}" if b["edge"] is not None else "",
-                        b["outcome"], b["win"], f"{b['pnl']:.4f}",
+                        b["outcome"], b["win"], f"{b['pnl_gross']:.4f}",
+                        f"{b['fee']:.4f}", f"{b['pnl']:.4f}",
                         f"{equity:.2f}", f"{dd:.2f}"])
 
 

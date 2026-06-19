@@ -77,6 +77,16 @@ MIN_CONFIDENCE = 0.20        # score minimo para apostar (bajado: menos filtro, 
 # y el sizing de Kelly usa ese precio. Asi no se apuesta cuando el costo se come la ventaja.
 EXEC_COST = 0.01            # 1 centavo (spread BTC/ETH ~1c; ajustar con backtest.py)
 
+# --- Comisiones de Polymarket (taker fee, categoria CRIPTO) ---
+# Desde 2026-03-23 Polymarket cobra un fee POR TRADE al taker (Mibot siempre es taker).
+# Formula: fee = shares * p * RATE * (p*(1-p))**EXP. Cripto = la categoria mas cara
+# (pico 1.80% en p=0.50). Lo modela src/fees.py; lo aplican track_record.py y
+# walkforward.py (evidencia y decision). En la logica VIVA se activa con APPLY_FEES_LIVE
+# (default False durante el stress-test para no cambiar el dataset; True en produccion).
+POLYMARKET_FEE_RATE = 0.072
+POLYMARKET_FEE_EXPONENT = 1.0
+APPLY_FEES_LIVE = False     # produccion: poner True (el bot exige edge neto del fee real)
+
 # --- Barandas de riesgo (hard gates) ---
 # Aun en modo agresivo dejamos un circuit-breaker: protege contra un BUG que dispare
 # cientos de apuestas malas (eso ensuciaria el track record, no es "aprender").

@@ -14,22 +14,24 @@ Mecanica (anchored / ventana expansiva):
   - En train: se ajusta la calibracion (PAV) y se ELIGE la banda de edge con mejor
     brecha (sin mirar el test). En test: se aplica todo y se mide OOS.
 
-Veredicto:
-  - brecha (wr - precio) > 0 en la MAYORIA de los folds -> edge robusto, implementar.
+Veredicto (DESPUES del taker fee real de Polymarket, ~1.8% en cripto):
+  - PnL neto > 0 en la MAYORIA de los folds OOS -> edge robusto y operable, implementar.
   - signo que salta entre folds -> no-estacionario, no hay edge confiable.
+  - El fee se aplica en eval_band: un edge que solo gana ANTES de fees no sirve.
 
 Uso:  venv\\Scripts\\python.exe walkforward.py
 """
 import sqlite3
 import bisect
 import config
+from src import fees
 from src.fair_value import prob_up_m  # no usado directo, pero marca la dependencia conceptual
 
 DB = config.DB_PATH
 PURGE_SEC = 900       # tau maximo: una prediccion de train puede resolver hasta 900s despues
 EMBARGO_SEC = 300     # gap extra tras el corte
 N_FOLDS = 6
-COST = config.EXEC_COST
+COST = config.EXEC_COST   # spread/slippage (el taker fee real se aplica aparte, ver eval_band)
 CAND_BANDS = [(0.03, 0.06), (0.05, 0.09), (0.05, 0.12), (0.06, 0.12), (0.09, 0.12)]
 
 
@@ -82,7 +84,7 @@ def calibrate(p, xs, ys):
 
 def eval_band(data, xs, ys, lo, hi, use_calib, min_tau=120):
     n = w = 0
-    psum = pnl = 0.0
+    psum = pnl = fee_sum = 0.0
     for ts, fair_p, eu, ed, tau, outcome in data:
         if tau < min_tau:
             continue
@@ -103,10 +105,14 @@ def eval_band(data, xs, ys, lo, hi, use_calib, min_tau=120):
         win = side == outcome
         n += 1; w += 1 if win else 0; psum += ask_eff
         shares = 100 / ask_eff
-        pnl += shares * (1 - ask_eff) if win else -100
+        # PnL NETO del taker fee real de Polymarket (cripto). Sin esto, el veredicto
+        # seria falsamente optimista: el fee es ~1.8% del notional en p=0.50.
+        fee = fees.taker_fee(shares, ask_eff)
+        fee_sum += fee
+        pnl += (shares * (1 - ask_eff) - fee) if win else (-100 - fee)
     if n == 0:
         return None
-    return n, w/n*100, psum/n*100, pnl
+    return n, w/n*100, psum/n*100, pnl, fee_sum
 
 
 def main():
@@ -157,14 +163,16 @@ def main():
         def fmt(r, band):
             if not r:
                 return "sin apuestas"
-            n, wr, price, pnl = r
+            n, wr, price, pnl, fee = r
             brecha = wr - price
             return (f"banda{band[0]*100:.0f}-{band[1]*100:.0f}  n={n:4d}  wr={wr:5.1f}%  "
-                    f"precio={price:4.1f}c  brecha={brecha:+5.1f}  pnl=${pnl:+7.0f}")
+                    f"precio={price:4.1f}c  brecha={brecha:+5.1f}  "
+                    f"pnl_neto=${pnl:+7.0f} (fee ${fee:.0f})")
 
-        if r_raw and (r_raw[1] - r_raw[2]) > 0.5:
+        # Fold "rentable OOS" = gano plata DESPUES del fee real (no solo brecha>0).
+        if r_raw and r_raw[3] > 0:
             pos_raw += 1
-        if r_cal and (r_cal[1] - r_cal[2]) > 0.5:
+        if r_cal and r_cal[3] > 0:
             pos_cal += 1
         print(f"fold {i+1}  (train={len(train):5d} test={len(test):4d})")
         print(f"    CRUDO       {fmt(r_raw, band_raw)}")
