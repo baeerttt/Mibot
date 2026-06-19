@@ -62,6 +62,21 @@ CREATE TABLE IF NOT EXISTS spot_tick (
 );
 CREATE INDEX IF NOT EXISTS idx_spot_sym_ts ON spot_tick(symbol, ts);
 
+-- Futures Intelligence (Binance Futures, API gratis sin key). Indicadores
+-- LIDER: el order flow de futuros suele anticipar al spot 1-5 min. Se RECOLECTA
+-- como feature candidata (no se opera con esto todavia; se valida con diagnose).
+CREATE TABLE IF NOT EXISTS futures_tick (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts          INTEGER,      -- reloj local
+    symbol      TEXT,
+    bucket_ts   INTEGER,      -- timestamp del bucket 5m de Binance (dedup)
+    oi          REAL,         -- open interest agregado
+    oi_delta    REAL,         -- cambio relativo de OI vs bucket anterior
+    taker_ratio REAL,         -- buy/sell volume ratio de takers (>1 = compra agresiva)
+    ls_ratio    REAL          -- long/short account ratio global (contrarian)
+);
+CREATE INDEX IF NOT EXISTS idx_fut_sym_ts ON futures_tick(symbol, ts);
+
 CREATE TABLE IF NOT EXISTS resolutions (
     slug            TEXT PRIMARY KEY,
     asset           TEXT,
@@ -128,6 +143,10 @@ _INSERTS = {
     ),
     "raw": "INSERT INTO pm_raw(ts,token_id,event_type,payload) VALUES(?,?,?,?)",
     "spot": "INSERT INTO spot_tick(ts,symbol,bid,ask,mid) VALUES(?,?,?,?,?)",
+    "futures": (
+        "INSERT INTO futures_tick(ts,symbol,bucket_ts,oi,oi_delta,taker_ratio,"
+        "ls_ratio) VALUES(?,?,?,?,?,?,?)"
+    ),
     "market": (
         "INSERT OR REPLACE INTO markets(slug,condition_id,asset,interval,"
         "window_start_ts,window_end_ts,up_token_id,down_token_id,liquidity,"

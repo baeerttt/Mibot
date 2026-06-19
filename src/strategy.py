@@ -148,13 +148,22 @@ class StrategyEngine:
         min_edge = self.cal.min_edge
         kelly_frac = self.cal.kelly_fraction
 
+        # CALIBRACION: para DECIDIR apostamos con la P(Up) calibrada (honesta), no
+        # la cruda. El log de predictions queda crudo (no contaminar el analisis);
+        # solo el edge/confianza con que se apuesta usan la probabilidad corregida.
+        fair_pc = self.cal.calibrate_prob(ev["fair_p"]) if config.USE_CALIBRATION else ev["fair_p"]
+
         cands = []
-        if ev["edge_up"] is not None:
-            cands.append(("up", ev["fair_p"], ev["ask_up"], ev["bid_up"],
-                          ev["asz_up"], ev["edge_up"], ev["conf_up"], mk.up_token_id))
-        if ev["edge_dn"] is not None:
-            cands.append(("down", 1 - ev["fair_p"], ev["ask_dn"], ev["bid_dn"],
-                          ev["asz_dn"], ev["edge_dn"], ev["conf_dn"], mk.down_token_id))
+        if ev["ask_up"]:
+            e_up = fair_pc - ev["ask_up"]
+            c_up = self._confidence(e_up, ev["ask_up"], ev["bid_up"], ev["asz_up"])
+            cands.append(("up", fair_pc, ev["ask_up"], ev["bid_up"],
+                          ev["asz_up"], e_up, c_up, mk.up_token_id))
+        if ev["ask_dn"]:
+            e_dn = (1 - fair_pc) - ev["ask_dn"]
+            c_dn = self._confidence(e_dn, ev["ask_dn"], ev["bid_dn"], ev["asz_dn"])
+            cands.append(("down", 1 - fair_pc, ev["ask_dn"], ev["bid_dn"],
+                          ev["asz_dn"], e_dn, c_dn, mk.down_token_id))
         cands.sort(key=lambda c: c[5], reverse=True)
         if not cands:
             return

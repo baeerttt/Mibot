@@ -26,6 +26,7 @@ import config
 from src.storage import Storage, now_ms
 from src.state import LiveState
 from src.binance_ws import run_binance_ws
+from src.binance_futures import fetch_futures
 from src.polymarket_ws import run_polymarket_ws
 from src.polymarket_api import discover_markets
 from src.fair_value import VolEstimator
@@ -150,6 +151,32 @@ async def vol_loop(state, vols, stop):
             if mid:
                 v.update(mid, now_ms())
         await sleep_or_stop(stop, 0.5)
+
+
+async def futures_loop(session, storage, symbols, stop):
+    """Recolecta indicadores lider de Binance Futures (OI/taker/L-S) por activo.
+    Solo loguea (feature candidata); dedup por bucket 5m. Resiliente a fallos."""
+    if not config.COLLECT_FUTURES:
+        return
+    last_bucket: dict[str, int] = {}
+    first = True
+    while not stop.is_set():
+        if not first:
+            await sleep_or_stop(stop, config.FUTURES_POLL_SEC)
+        first = False
+        if stop.is_set():
+            break
+        for sym in symbols:
+            try:
+                f = await fetch_futures(session, sym)
+                bt = f.get("bucket_ts")
+                if bt and last_bucket.get(sym) != bt:
+                    last_bucket[sym] = bt
+                    storage.put("futures", (now_ms(), sym, bt, f.get("oi"),
+                                            f.get("oi_delta"), f.get("taker_ratio"),
+                                            f.get("ls_ratio")))
+            except Exception:  # noqa: BLE001
+                pass
 
 
 async def recalib_loop(cal, stop):
@@ -316,6 +343,7 @@ async def main(use_tui=True, duration=None):
             asyncio.create_task(settle_loop(storage, state, pf, cal, engine, stop)),
             asyncio.create_task(strategy_loop(engine, stop)),
             asyncio.create_task(vol_loop(state, vols, stop)),
+            asyncio.create_task(futures_loop(session, storage, symbols, stop)),
             asyncio.create_task(recalib_loop(cal, stop)),
             asyncio.create_task(equity_loop(pf, stop)),
             asyncio.create_task(lock_loop(stop)),

@@ -41,6 +41,13 @@ class Calibrator:
         self.last_recalib_ts = 0.0
         self.n_recalibs = 0
         self.k_prev = 1.0
+        # capa de calibracion isotonica (PAV): mapea fair_p crudo -> prob real.
+        # El modelo de fair value esta S-comprimido (dice 65% cuando la realidad es
+        # 77%). Ajustar solo k (un parametro) no arregla la forma; esta capa si.
+        # Se re-ajusta sobre el buffer movil (rolling) -> se adapta al regimen.
+        self._calib_x: list[float] | None = None   # knots: fair_p crudo
+        self._calib_y: list[float] | None = None   # knots: prob calibrada
+        self.last_brier_cal: float | None = None
         # parametros geneticos — parten de config y mutan con performance
         self.kelly_fraction = config.KELLY_FRACTION
         self.min_edge = config.MIN_EDGE
@@ -86,9 +93,65 @@ class Calibrator:
         self.k_prev = self.k
         self.k = 0.7 * self.k + 0.3 * best_k    # cambio suavizado
         self.last_brier = self._brier_at(self.k)
+        self._fit_calibration()                 # re-ajusta la capa isotonica con el k nuevo
         self.last_recalib_ts = time.time()
         self.n_recalibs += 1
         self.save_state()
+
+    # --- capa de calibracion isotonica (PAV) ---
+
+    @staticmethod
+    def _pav(pairs):
+        """Pool Adjacent Violators: ajuste isotonico (monotono creciente).
+        pairs = [(x, y)] ordenado por x. Devuelve bloques [x0, x1, valor]."""
+        blocks = []  # cada uno: [peso, suma_y, x0, x1]
+        for x, y in pairs:
+            blocks.append([1.0, y, x, x])
+            while len(blocks) >= 2 and blocks[-2][1] / blocks[-2][0] >= blocks[-1][1] / blocks[-1][0]:
+                w2, s2, a2, b2 = blocks.pop()
+                w1, s1, a1, b1 = blocks.pop()
+                blocks.append([w1 + w2, s1 + s2, a1, b2])
+        return [(a, b, s / w) for (w, s, a, b) in blocks]
+
+    def _fit_calibration(self):
+        """Ajusta fair_p_crudo -> frecuencia real sobre el buffer movil."""
+        pts = []
+        for (m, tau, sigma, y) in self.buffer:
+            p = prob_up_m(m, tau, sigma * self.k)
+            if p is not None:
+                pts.append((p, y))
+        if len(pts) < self.min_samples:
+            self._calib_x = self._calib_y = None
+            return
+        pts.sort(key=lambda t: t[0])
+        blocks = self._pav(pts)
+        # knots = centro de cada bloque -> su valor calibrado
+        self._calib_x = [(a + b) / 2 for (a, b, _) in blocks]
+        self._calib_y = [v for (_, _, v) in blocks]
+        # Brier del modelo YA calibrado, para comparar contra el crudo
+        s, n = 0.0, 0
+        for (p, y) in pts:
+            pc = self.calibrate_prob(p)
+            s += (pc - y) ** 2
+            n += 1
+        self.last_brier_cal = s / n if n else None
+
+    def calibrate_prob(self, p: float) -> float:
+        """Mapea una P(Up) cruda a la calibrada (interpolacion lineal entre knots)."""
+        xs, ys = self._calib_x, self._calib_y
+        if not xs or p is None:
+            return p
+        if p <= xs[0]:
+            return ys[0]
+        if p >= xs[-1]:
+            return ys[-1]
+        import bisect
+        j = bisect.bisect_right(xs, p) - 1
+        j = max(0, min(len(xs) - 2, j))
+        x0, x1 = xs[j], xs[j + 1]
+        y0, y1 = ys[j], ys[j + 1]
+        t = (p - x0) / (x1 - x0) if x1 > x0 else 0.0
+        return min(0.999, max(0.001, y0 + t * (y1 - y0)))
 
     # --- mutacion genetica ---
 
@@ -166,6 +229,8 @@ class Calibrator:
             "last_wr_at_mutation": self.last_wr_at_mutation,
             "n_since_mutation": self._n_since_mutation,
             "recent_outcomes": list(self._recent_outcomes),
+            "calib_x": self._calib_x, "calib_y": self._calib_y,
+            "last_brier_cal": self.last_brier_cal,
         }
         try:
             tmp = STATE_PATH + ".tmp"
@@ -192,6 +257,9 @@ class Calibrator:
             self._n_since_mutation = s.get("n_since_mutation", 0)
             self._recent_outcomes = deque(s.get("recent_outcomes", []),
                                           maxlen=MUTATION_WINDOW)
+            self._calib_x = s.get("calib_x")
+            self._calib_y = s.get("calib_y")
+            self.last_brier_cal = s.get("last_brier_cal")
         except (FileNotFoundError, json.JSONDecodeError, KeyError):
             pass  # primera vez: usa defaults
 
@@ -200,6 +268,8 @@ class Calibrator:
     def stats(self):
         return {
             "k": self.k, "k_prev": self.k_prev, "model_brier": self.last_brier,
+            "model_brier_cal": self.last_brier_cal,
+            "calibrated": bool(self._calib_x),
             "n": len(self.buffer), "n_recalibs": self.n_recalibs,
             "last_recalib_ts": self.last_recalib_ts,
             "generation": self.generation,

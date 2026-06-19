@@ -56,6 +56,13 @@ KELLY_FRACTION = 0.40        # base de Kelly (la mutacion genetica lo sube/baja 
 MAX_BET_PCT = 0.05          # tope por apuesta: 5% del bankroll (apuestas mas grandes)
 MIN_BET = 5.0               # apuesta minima en $
 
+# --- Capa de calibracion isotonica (PAV) ---
+# El modelo de fair value esta S-comprimido: dice 65% cuando la realidad es 77%
+# (medido en diagnose.py). El Calibrator aprende un mapa fair_p_crudo -> prob real
+# sobre su buffer movil y la estrategia apuesta con la probabilidad CALIBRADA.
+# El log de predictions queda crudo (para no contaminar diagnose/backtest/stability).
+USE_CALIBRATION = True
+
 # --- Score de confianza 4-factor (edge, liquidez, spread) ---
 MIN_CONFIDENCE = 0.20        # score minimo para apostar (bajado: menos filtro, mas accion)
 
@@ -84,6 +91,13 @@ ONE_BET_PER_MARKET = True   # una sola posicion por ventana
 # --- Kill-switches por staleness de datos ---
 STALE_SPOT_MS = 3000        # si el spot no actualiza en 3s -> no operar
 STALE_BOOK_MS = 6000        # si el book no actualiza en 6s -> no operar
+
+# --- Futures Intelligence (recoleccion de features lider, no se opera con esto aun) ---
+# OI Delta / Taker Ratio / L/S Ratio de Binance Futures (API gratis). Se loguean en
+# futures_tick para validar con diagnose.py si predicen el outcome. Si predicen,
+# recien ahi entran a la estrategia. Buckets de 5m -> no hace falta pollear seguido.
+COLLECT_FUTURES = True
+FUTURES_POLL_SEC = 60
 
 # --- Motor ---
 EVAL_INTERVAL_SEC = 1.0     # cada cuanto evalua oportunidades
