@@ -176,6 +176,12 @@ class StrategyEngine:
         if bid and (ask - bid) > config.MAX_SPREAD:
             return
 
+        # Filtro de correlacion: no acumular apuestas en la misma direccion entre
+        # activos correlacionados (seria una sola apuesta apalancada a la cripto).
+        same_dir = sum(1 for p in self.pf.positions.values() if p.side == side)
+        if same_dir >= config.MAX_SAME_DIR_CONCURRENT:
+            return
+
         # Fill conservador: asumimos que pagamos ask+costo, no el ask optimista.
         ask_eff = ask + cost
         if ask_eff >= 0.99:

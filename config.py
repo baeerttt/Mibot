@@ -66,10 +66,15 @@ EXEC_COST = 0.01            # 1 centavo (spread BTC/ETH ~1c; ajustar con backtes
 # Aun en modo agresivo dejamos un circuit-breaker: protege contra un BUG que dispare
 # cientos de apuestas malas (eso ensuciaria el track record, no es "aprender").
 MAX_CONCURRENT = 10         # posiciones abiertas simultaneas (4 activos x 2 intervalos)
+# Filtro de correlacion: BTC/ETH/SOL/XRP se mueven juntos. Apostar el mismo lado en
+# varios a la vez = una sola apuesta apalancada a "la cripto sube/baja" (riesgo de
+# ruina). Tope de posiciones simultaneas en la MISMA direccion entre activos.
+MAX_SAME_DIR_CONCURRENT = 2
 DAILY_LOSS_LIMIT_PCT = 0.20 # circuit-breaker: si el dia pierde 20% -> stop hasta manana
 SOFT_DRAWDOWN_PCT  = 0.12   # alerta suave antes del hard stop
 MAX_SPREAD = 0.05           # no operar si el spread del lado a comprar supera esto
-MIN_TIME_LEFT_SEC = 30      # no abrir con menos de 30s para el cierre
+MIN_TIME_LEFT_SEC = 120     # no abrir con <120s: el backtest mostró que cerca del cierre
+                            # el modelo da edge enorme pero acierta ~29% (σ√τ→0 lo infla, es basura)
 ONE_BET_PER_MARKET = True   # una sola posicion por ventana
 
 # --- Kill-switches por staleness de datos ---

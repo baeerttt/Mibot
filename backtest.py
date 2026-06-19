@@ -240,6 +240,49 @@ def main():
     for iv, (n, w, pnl) in sorted(best.by_interval.items(), key=lambda x: -x[1][2]):
         print(f"   {iv:4} {n:4d} bets  {w:3d}W  wr={w/n*100:4.1f}%  pnl={pnl:+9.2f}")
 
+    print("\n" + "=" * 100)
+    print("#1 FILTRO DE CORRELACION: mismo preset, tope de apuestas misma direccion\n")
+    base = dict(min_edge=0.04, kelly=0.25, max_bet_pct=0.02, assets=("btc", "eth"),
+                max_concurrent=4, daily_loss_pct=0.08, cost=0.010)
+    for cap in (1, 2, 3, 99):
+        cap_name = "sin tope" if cap == 99 else f"max {cap}/dir"
+        r = simulate(rows, BTConfig(f"  corr {cap_name}", max_corr_per_dir=cap, **base))
+        print(_fmt(r))
+    print("  (mirá maxDD: el filtro baja la caida maxima aunque el PnL sea ruido)")
+
+    print("\n" + "=" * 100)
+    print("#3 TIME-DECAY: win rate del lado elegido por franja de tau (candidatos edge>=4c)\n")
+    tau_analysis(rows, min_edge=0.04, cost=0.010)
+
+
+def tau_analysis(rows, min_edge=0.04, cost=0.010):
+    """Win rate del lado que elige el modelo, segmentado por tiempo al cierre.
+    Responde: ¿el edge funciona mejor cerca del cierre o lejos? (datos, no opinion)"""
+    buckets = [(0, 60), (60, 120), (120, 300), (300, 600), (600, 900)]
+    stats = {b: [0, 0, 0.0] for b in buckets}   # [candidatos, aciertos, suma_edge]
+    for ts, slug, asset, fair_p, edge_up, edge_dn, tau, outcome in rows:
+        if edge_up >= edge_dn:
+            side, edge = "up", edge_up
+        else:
+            side, edge = "down", edge_dn
+        if (edge - cost) < min_edge:
+            continue
+        for lo, hi in buckets:
+            if lo < tau <= hi:
+                s = stats[(lo, hi)]
+                s[0] += 1
+                s[1] += 1 if side == outcome else 0
+                s[2] += edge
+                break
+    for (lo, hi), (n, w, esum) in stats.items():
+        if n == 0:
+            print(f"  tau {lo:3d}-{hi:3d}s:  sin candidatos")
+            continue
+        wr = w / n * 100
+        print(f"  tau {lo:3d}-{hi:3d}s:  {n:4d} candidatos  win_rate={wr:5.1f}%  edge_prom={esum/n*100:4.1f}%")
+    print("  Lectura: si el win_rate SUBE cuando tau baja -> conviene ser agresivo al cierre.")
+    print("           si BAJA -> la cautela actual (MAX_EDGE_TRUST, MIN_TIME_LEFT) acierta.")
+
 
 if __name__ == "__main__":
     import sys
