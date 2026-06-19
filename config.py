@@ -47,7 +47,11 @@ TRADE_INTERVALS = ("5m", "15m")
 
 # --- Edge y sizing (agresivo: arriesga mas, junta mas datos) ---
 MIN_EDGE = 0.02             # edge minimo para abrir (bajado: mas trades)
-MAX_EDGE_TRUST = 0.25        # edges mayores = probable error de modelo cerca del cierre -> ignorar
+# Edge alto = MAXIMA discrepancia con el mercado = donde el modelo MAS se equivoca.
+# El diagnostico (diagnose.py/stability.py) mostro que la banda edge>12% PIERDE en
+# los 4 cuartos temporales (brecha wr-precio entre -2.6 y -9.6): es el blow-up de
+# sigma*sqrt(tau)->0 cerca del cierre + seleccion adversa. Cortado de 0.25 a 0.12.
+MAX_EDGE_TRUST = 0.12
 KELLY_FRACTION = 0.40        # base de Kelly (la mutacion genetica lo sube/baja 0.10-0.50)
 MAX_BET_PCT = 0.05          # tope por apuesta: 5% del bankroll (apuestas mas grandes)
 MIN_BET = 5.0               # apuesta minima en $
