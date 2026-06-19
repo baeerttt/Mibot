@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 import config
+from src import fees as fees_mod
 
 DB_PATH = config.DB_PATH
 
@@ -40,6 +41,8 @@ class BTConfig:
     min_bet: float = 5.0
     min_time_left: float = 30.0
     cost: float = 0.0                      # slippage/costo sumado al ask (precio)
+    real_fee: bool = False                 # True: suma el taker fee real de Polymarket (cripto)
+    dead_zone: float = 0.0                 # distancia a 0.50 a EVITAR (0.05 = no operar ask en [0.45,0.55])
     assets: tuple = ("btc", "eth", "sol", "xrp")
     intervals: tuple = ("5m", "15m")
     max_concurrent: int = 10
@@ -58,6 +61,7 @@ class BTResult:
     brier_sum: float = 0.0
     peak: float = 0.0
     max_dd: float = 0.0
+    fees_paid: float = 0.0
     by_asset: dict = field(default_factory=dict)
     by_interval: dict = field(default_factory=dict)
 
@@ -142,15 +146,20 @@ def simulate(rows, cfg: BTConfig) -> BTResult:
             side, p_side, edge = "up", fair_p, edge_up
         else:
             side, p_side, edge = "down", 1 - fair_p, edge_dn
-        # edge NETO (despues del costo) es el que tiene que superar el umbral
-        net_edge = edge - cfg.cost
+
+        ask = p_side - edge                 # ask realmente cotizado
+        # dead-zone: evitar apostar cerca de 0.50 (ahi el fee real es maximo)
+        if cfg.dead_zone > 0 and abs(ask - 0.5) < cfg.dead_zone:
+            continue
+        fee_ps = fees_mod.fee_per_share(ask) if cfg.real_fee else 0.0
+        # edge NETO (despues de costo+fee) es el que tiene que superar el umbral
+        net_edge = edge - cfg.cost - fee_ps
         if net_edge < cfg.min_edge or edge > cfg.max_edge_trust:
             continue
         if open_dir[side] >= cfg.max_corr_per_dir:
             continue
 
-        ask = p_side - edge                 # ask realmente cotizado
-        ask_eff = ask + cfg.cost            # fill conservador (paga ask+costo)
+        ask_eff = ask + cfg.cost + fee_ps   # fill conservador (paga ask+costo+fee)
         if ask_eff <= 0.01 or ask_eff >= 0.99:
             continue
         f_star = (p_side - ask_eff) / (1 - ask_eff)
@@ -161,9 +170,10 @@ def simulate(rows, cfg: BTConfig) -> BTResult:
         if stake < cfg.min_bet:
             continue
         shares = stake / ask_eff
+        fee_paid = fees_mod.taker_fee(shares, ask) if cfg.real_fee else 0.0
 
         win = (side == outcome)
-        pnl = shares * (1 - ask_eff) if win else -stake
+        pnl = (shares * (1 - ask_eff) if win else -stake)
 
         bet_slugs.add(slug)
         open_dir[side] += 1
@@ -171,6 +181,7 @@ def simulate(rows, cfg: BTConfig) -> BTResult:
 
         res.n_bets += 1
         res.wins += 1 if win else 0
+        res.fees_paid += fee_paid
         res.brier_sum += (p_side - (1.0 if win else 0.0)) ** 2
         a = res.by_asset.setdefault(asset, [0, 0, 0.0])
         a[0] += 1; a[1] += 1 if win else 0; a[2] += pnl
@@ -187,8 +198,9 @@ def simulate(rows, cfg: BTConfig) -> BTResult:
 def _fmt(res: BTResult):
     wr = f"{res.win_rate*100:4.1f}%" if res.win_rate is not None else "  -  "
     br = f"{res.brier:.3f}" if res.brier is not None else "  -  "
-    return (f"{res.name:<26} pnl={res.pnl:+9.2f}  eq={res.equity:9.2f}  "
-            f"bets={res.n_bets:4d}  wr={wr}  brier={br}  maxDD={res.max_dd:7.0f}")
+    fee_str = f"  fee={res.fees_paid:6.0f}" if res.fees_paid else ""
+    return (f"{res.name:<30} pnl={res.pnl:+9.2f}  eq={res.equity:9.2f}  "
+            f"bets={res.n_bets:4d}  wr={wr}  brier={br}  maxDD={res.max_dd:7.0f}{fee_str}")
 
 
 def main():
@@ -253,6 +265,52 @@ def main():
     print("\n" + "=" * 100)
     print("#3 TIME-DECAY: win rate del lado elegido por franja de tau (candidatos edge>=4c)\n")
     tau_analysis(rows, min_edge=0.04, cost=0.010)
+
+    print("\n" + "=" * 100)
+    print("#4 RENTABILIDAD CON FEE REAL (taker fee Polymarket cripto, max 1.80% en p=0.50)\n")
+    fee_sweeps(rows)
+
+
+def fee_sweeps(rows):
+    """Barrido para encontrar la config mas rentable DESPUES del fee real:
+    por activo, por banda de edge, y por dead-zone alrededor de 0.50."""
+    base = dict(kelly=0.25, max_bet_pct=0.02, intervals=("15m",), max_concurrent=4,
+                daily_loss_pct=0.08, cost=0.010, real_fee=True)
+
+    print("Por activo (solo, min_edge=0.04, 15m, fee real):\n")
+    by_asset_results = []
+    for a in ("btc", "eth", "sol", "xrp"):
+        r = simulate(rows, BTConfig(f"  solo {a}", min_edge=0.04, assets=(a,), **base))
+        by_asset_results.append((a, r))
+        print(_fmt(r))
+
+    print("\nSweep de banda de edge (min_edge), BTC+ETH, fee real:\n")
+    band_results = []
+    for me in (0.02, 0.03, 0.04, 0.05, 0.06, 0.08, 0.10, 0.12):
+        r = simulate(rows, BTConfig(f"  min_edge={me:.2f}", min_edge=me,
+                     assets=("btc", "eth"), **base))
+        band_results.append((me, r))
+        print(_fmt(r))
+
+    print("\nSweep de dead-zone alrededor de 0.50 (BTC+ETH, min_edge=0.04, fee real):\n")
+    dz_results = []
+    for dz in (0.0, 0.02, 0.05, 0.08, 0.10, 0.15):
+        r = simulate(rows, BTConfig(f"  dead_zone={dz:.2f}", min_edge=0.04,
+                     dead_zone=dz, assets=("btc", "eth"), **base))
+        dz_results.append((dz, r))
+        print(_fmt(r))
+
+    print("\n" + "=" * 100)
+    print("MEJOR COMBINACION ENCONTRADA (greedy: activo -> banda -> dead-zone):\n")
+    best_asset, best_r = max(by_asset_results, key=lambda x: x[1].pnl)
+    best_band, _ = max(band_results, key=lambda x: x[1].pnl)
+    best_dz, _ = max(dz_results, key=lambda x: x[1].pnl)
+    final = simulate(rows, BTConfig(f"FINAL {best_asset} edge{best_band} dz{best_dz}",
+                     min_edge=best_band, dead_zone=best_dz, assets=(best_asset,), **base))
+    print(_fmt(final))
+    if final.n_bets < 100:
+        print("\n  OJO: muestra chica en la combinacion ganadora — no es una conclusion firme,")
+        print("  es una pista. Re-correr esto el 23/6 con 5 dias de datos.")
 
 
 def tau_analysis(rows, min_edge=0.04, cost=0.010):
