@@ -27,6 +27,10 @@ INTERVALS = ("5m", "15m")
 # --- Parametros del colector ---
 DISCOVERY_POLL_SEC = 30      # cada cuanto re-escanea Gamma por mercados nuevos
 DISCOVERY_HORIZON_MIN = 60   # ventana hacia adelante para buscar mercados que cierran
+# Salud del discovery: si el ultimo escaneo exitoso fue hace mas de esto, el bot
+# esta "cerebro-muerto" (vivo pero sin mercados nuevos: tipico bloqueo DNS del ISP
+# a Polymarket). Se alarma en la TUI/visor y en el log headless. ~2.5 polls.
+DISCOVERY_STALE_WARN_SEC = 90
 MIN_LIQUIDITY = 500.0        # filtra mercados sin liquidez util
 PM_RECONNECT_CHECK_SEC = 10  # cada cuanto el WS revisa si cambio el set de tokens
 

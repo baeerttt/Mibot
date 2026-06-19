@@ -58,6 +58,11 @@ class LiveState:
         self.spot: dict = {}             # symbol -> {bid, ask, mid, ts}
         self.window_open: dict = {}      # slug -> S_0 (float) | None si se perdio el open
         self.window_close: dict = {}     # slug -> S_1 (float) al cierre de la ventana
+        # salud del discovery (Gamma API): detecta el fallo silencioso por el que el
+        # bot sigue "vivo" (ticks + spot de Binance) pero no descubre mercados nuevos.
+        self.last_discovery_ok: float = 0.0   # epoch seg del ultimo escaneo exitoso
+        self.discovery_fails: int = 0         # fallos consecutivos del discovery
+        self.last_discovery_err: str | None = None
 
     # --- gestion de mercados activos ---
     def token_list(self):
@@ -104,3 +109,9 @@ class LiveState:
     def book_age_ms(self, token):
         ts = self.book_ts.get(token)
         return (now_ms() - ts) if ts else None
+
+    def discovery_stale_sec(self):
+        """Segundos desde el ultimo discovery exitoso (None si nunca corrio aun)."""
+        if not self.last_discovery_ok:
+            return None
+        return time.time() - self.last_discovery_ok

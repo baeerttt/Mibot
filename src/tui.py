@@ -91,6 +91,15 @@ def _topbar(state, engine, cal):
                   style="bold black on deep_sky_blue1" if analyzing else "grey50")
     badges.append(" 🧠 APRENDIENDO " if learning else " 🧠 juntando datos ",
                   style="bold black on medium_purple1" if learning else "grey50")
+    # Salud del discovery: el bot puede seguir tickeando (Binance vivo) pero sin
+    # descubrir mercados nuevos (bloqueo DNS a Polymarket). Esto lo hace visible.
+    ds = state.discovery_stale_sec()
+    if ds is None:
+        badges.append("  ◇ discovery ", style="grey50")
+    elif ds > config.DISCOVERY_STALE_WARN_SEC:
+        badges.append(f" ⚠ DISCOVERY CAÍDO {int(ds)}s ", style="bold white on red1")
+    else:
+        badges.append(" ◆ MERCADOS OK ", style="bold black on green3")
 
     ticker = Text("   ")
     for sym in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT"):

@@ -75,15 +75,27 @@ async def sleep_or_stop(stop, secs):
 
 
 async def discovery_loop(session, storage, state, stop):
-    """Solo agrega mercados nuevos; la expiracion la maneja settle_loop."""
+    """Solo agrega mercados nuevos; la expiracion la maneja settle_loop.
+    Marca la salud del discovery: un fallo (tipico bloqueo DNS del ISP a Polymarket)
+    deja al bot 'cerebro-muerto' (sigue tickeando con Binance pero sin mercados)."""
     while not stop.is_set():
         try:
-            for mk in await discover_markets(session):
+            mks = await discover_markets(session)
+            for mk in mks:
                 if mk.slug not in state.markets:
                     state.add(mk)
                     storage.put("market", mk.db_row())
-        except Exception:  # noqa: BLE001
-            pass
+            state.last_discovery_ok = time.time()
+            if state.discovery_fails:
+                if not config.QUIET:
+                    print(f"[discovery] recuperado tras {state.discovery_fails} fallos")
+                state.discovery_fails = 0
+                state.last_discovery_err = None
+        except Exception as e:  # noqa: BLE001
+            state.discovery_fails += 1
+            state.last_discovery_err = str(e)[:200]
+            if not config.QUIET:
+                print(f"[discovery] FALLO #{state.discovery_fails}: {e}")
         await sleep_or_stop(stop, config.DISCOVERY_POLL_SEC)
 
 
@@ -276,6 +288,11 @@ def _make_snapshot(state, pf, engine, cal, vols):
             sym: {"sigma_per_sec": v.sigma_per_sec, "ready": v.ready()}
             for sym, v in vols.items()
         },
+        "health": {
+            "discovery_stale_sec": state.discovery_stale_sec(),
+            "discovery_fails": state.discovery_fails,
+            "discovery_err": state.last_discovery_err,
+        },
     }
 
 
@@ -293,13 +310,18 @@ async def snapshot_loop(state, pf, engine, cal, vols, stop):
         await sleep_or_stop(stop, 1.0)
 
 
-async def headless_loop(pf, engine, stop):
+async def headless_loop(pf, engine, state, stop):
     while not stop.is_set():
         await sleep_or_stop(stop, 15)
         s = pf.stats()
         wr = f"{s['win_rate']*100:.1f}%" if s["win_rate"] is not None else "-"
         print(f"[bot] equity=${s['equity']:.2f} pnl={s['realized']:+.2f} "
               f"bets={s['n_bets']} settled={s['n_settled']} wr={wr} open={s['n_open']}")
+        ds = state.discovery_stale_sec()
+        if ds is not None and ds > config.DISCOVERY_STALE_WARN_SEC:
+            print(f"[ALERTA] discovery sin exito hace {int(ds)}s "
+                  f"(fallos={state.discovery_fails}) -> el bot NO ve mercados nuevos. "
+                  f"Sospechar DNS (correr data/fix-dns.ps1). Ult error: {state.last_discovery_err}")
 
 
 async def main(use_tui=True, duration=None):
@@ -350,7 +372,7 @@ async def main(use_tui=True, duration=None):
             asyncio.create_task(snapshot_loop(state, pf, engine, cal, vols, stop)),
             asyncio.create_task(
                 tui_loop(state, pf, engine, cal, vols, stop) if use_tui
-                else headless_loop(pf, engine, stop)),
+                else headless_loop(pf, engine, state, stop)),
         ]
         try:
             if duration:

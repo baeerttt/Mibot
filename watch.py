@@ -47,6 +47,7 @@ class _SnapState:
     def __init__(self, snap):
         self._spot = snap.get("spot", {})
         self._spot_age = snap.get("spot_age_ms", {})
+        self._health = snap.get("health", {})
         self.obooks = {
             token: _ObProxy(ob)
             for token, ob in snap.get("obooks", {}).items()
@@ -57,6 +58,9 @@ class _SnapState:
 
     def spot_age_ms(self, sym):
         return self._spot_age.get(sym)
+
+    def discovery_stale_sec(self):
+        return self._health.get("discovery_stale_sec")
 
 
 class _SnapEngine:
