@@ -149,6 +149,13 @@ def _account(pf):
         _kv("límite día", _pct(-config.DAILY_LOSS_LIMIT_PCT)),
         Text(status_txt, style=status_sty),
     )
+    dd_frac = s.get("max_dd_frac") or 0.0
+    dd_sty = "red1" if dd_frac > 0.15 else ("orange1" if dd_frac > 0.05 else "grey70")
+    g.add_row(
+        _kv("drawdown máx", _pct(dd_frac, False), f"bold {dd_sty}"),
+        _kv("  (en $)", _money(s.get("max_dd_abs"))),
+        Text(""),
+    )
     spark = _spark(list(pf.equity_hist))
     body = Table.grid(expand=True)
     body.add_row(g)
@@ -181,7 +188,11 @@ def _perf(pf, cal, vol):
     g = Table.grid(expand=True, padding=(0, 1))
     for _ in range(2):
         g.add_column(justify="left", ratio=1)
-    g.add_row(_kv("WIN RATE", wr, "bold cyan1"), wl)
+    rwr = s.get("recent_win_rate")
+    rwr_txt = _pct(rwr) if rwr is not None else "—"
+    g.add_row(_kv("WIN RATE", wr, "bold cyan1"),
+              _kv("forma (últ.20)", rwr_txt,
+                  f"bold {_col((rwr or 0) - 0.5)}" if rwr is not None else "grey50"))
     g.add_row(_kv("liquidadas", str(s["n_settled"])),
               _kv("apuestas", f"{s['n_bets']}  ↑{s['up_bets']}/↓{s['down_bets']}"))
     g.add_row(_kv("Brier apuestas", bet_brier, "bold white"),

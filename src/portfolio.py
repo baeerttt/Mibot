@@ -69,6 +69,10 @@ class PaperPortfolio:
         self.equity_hist = deque(maxlen=80)  # para el sparkline del dashboard
         self.day = datetime.now(timezone.utc).date()
         self.day_start_realized = 0.0
+        # drawdown en vivo: pico de equity y maxima caida desde el pico
+        self.peak_equity = start
+        self.max_dd_abs = 0.0
+        self.max_dd_frac = 0.0
 
     # --- contabilidad ---
     @property
@@ -124,6 +128,24 @@ class PaperPortfolio:
     def has_position(self, slug: str) -> bool:
         return any(p.slug == slug for p in self.positions.values())
 
+    def _update_drawdown(self):
+        """Actualiza pico de equity y maximo drawdown (llamar tras cada cambio de PnL)."""
+        eq = self.equity
+        if eq > self.peak_equity:
+            self.peak_equity = eq
+        dd = self.peak_equity - eq
+        if dd > self.max_dd_abs:
+            self.max_dd_abs = dd
+        if self.peak_equity > 0:
+            self.max_dd_frac = max(self.max_dd_frac, dd / self.peak_equity)
+
+    @property
+    def recent_win_rate(self):
+        """Win rate de las ultimas apuestas liquidadas (forma reciente; None si vacio)."""
+        if not self.recent:
+            return None
+        return sum(1 for r in self.recent if r["win"]) / len(self.recent)
+
     # --- operaciones ---
     def open_bet(self, mk, side, price, shares, fair_p, edge) -> Position | None:
         stake = shares * price
@@ -160,6 +182,7 @@ class PaperPortfolio:
                           (self.streak - 1) if (not win and self.streak <= 0) else \
                           (1 if win else -1)
             self.equity_hist.append(self.equity)
+            self._update_drawdown()
             self.recent.appendleft({
                 "slug": slug, "side": pos.side, "outcome": outcome,
                 "price": pos.price, "stake": pos.stake, "pnl": pnl, "win": win,
@@ -251,10 +274,14 @@ class PaperPortfolio:
         self.brier_sum = 0.0
         self.streak = 0
         self.day_start_realized = 0.0
+        self.peak_equity = self.start
+        self.max_dd_abs = 0.0
+        self.max_dd_frac = 0.0
         self.recent.clear()
         for slug, side, price, shares, stake, fair_p, outcome, pnl, ts_settle in settled:
             win = (side == outcome)
             self.realized += (pnl or 0.0)
+            self._update_drawdown()
             self.n_settled += 1
             self.wins += 1 if win else 0
             if fair_p is not None:
@@ -288,4 +315,6 @@ class PaperPortfolio:
             "win_rate": self.win_rate, "brier": self.brier, "roi": self.roi,
             "day_pnl": self.day_pnl, "halted": self.daily_limit_hit(),
             "soft_warn": self.soft_drawdown_hit(),
+            "max_dd_abs": self.max_dd_abs, "max_dd_frac": self.max_dd_frac,
+            "recent_win_rate": self.recent_win_rate,
         }
