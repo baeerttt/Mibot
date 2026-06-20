@@ -200,10 +200,13 @@ class StrategyEngine:
         if same_dir >= config.MAX_SAME_DIR_CONCURRENT:
             return
 
-        # Fill conservador: pagamos ask + costo de ejecucion + fee real del taker
-        # (no el ask optimista). El fee queda baked en el precio de entrada -> el PnL
-        # liquidado ya lo descuenta honestamente.
-        ask_eff = ask + cost + fee_ps
+        # Sizing conservador: Kelly sobre el precio EFECTIVO (ask+cost+fee). PERO a la
+        # tabla bets va el precio SIN fee (ask+cost): el fee se contabiliza UNA sola vez
+        # en el analisis (track_record.py/walkforward.py calculan el fee desde shares y
+        # price). Si ademas lo bakearamos en el price guardado, se contaria DOBLE y se
+        # contaminaria el brier_market. Convencion: la DB guarda PnL/price BRUTO de fee.
+        ask_eff = ask + cost + fee_ps        # efectivo: para dimensionar (conservador)
+        price_book = ask + cost              # lo que se registra (bruto de fee)
         if ask_eff >= 0.99:
             return
         f_star = (p_side - ask_eff) / (1 - ask_eff)
@@ -213,11 +216,11 @@ class StrategyEngine:
         stake = self.pf.equity * frac
         shares = stake / ask_eff
         shares = min(shares, asz)
-        stake = shares * ask_eff
+        stake = shares * price_book
         if stake < config.MIN_BET:
             return
 
-        pos = self.pf.open_bet(mk, side, ask_eff, shares, p_side, net_edge)
+        pos = self.pf.open_bet(mk, side, price_book, shares, p_side, net_edge)
         if pos:
             self.last_bet_ts = time.time()
             self.log.appendleft(
