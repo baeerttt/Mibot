@@ -96,6 +96,10 @@ def eval_band(data, xs, ys, lo, hi, use_calib, min_tau=120):
             side, p_side, edge, ask = "up", p, e_up, ask_up
         else:
             side, p_side, edge, ask = "down", 1 - p, e_dn, ask_dn
+        # Dead-zone: misma logica que strategy.py viva — no operar cerca de 0.50 (fee
+        # maximo + sin edge). Aplica en train (eleccion de banda) y test por igual.
+        if config.DEAD_ZONE > 0 and abs(ask - 0.5) < config.DEAD_ZONE:
+            continue
         net = edge - COST
         if not (lo <= net < hi) or edge > config.MAX_EDGE_TRUST:
             continue

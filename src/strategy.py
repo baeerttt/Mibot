@@ -19,6 +19,7 @@ import time
 from collections import deque
 
 import config
+from src import fees
 from src.fair_value import prob_up
 from src.state import now_ms
 
@@ -169,10 +170,18 @@ class StrategyEngine:
             return
         side, p_side, ask, bid, asz, edge, conf, token = cands[0]
 
-        # El edge NETO (despues del costo de ejecucion) es el que tiene que valer.
-        # Asi no apostamos cuando el spread/slippage se come la ventaja.
+        # Dead-zone: cerca de 0.50 el fee de Polymarket es MAXIMO (1.8%) y el modelo no
+        # tiene edge (moneda al aire). El barrido fee-real (backtest.py) mostro que
+        # evitar |ask-0.50| < DEAD_ZONE da vuelta el signo del PnL. Es el lever #1.
+        if config.DEAD_ZONE > 0 and abs(ask - 0.5) < config.DEAD_ZONE:
+            return
+
+        # El edge NETO (despues del costo de ejecucion + fee real del taker) es el que
+        # tiene que valer. fee_per_share(ask) es maximo en 0.50 -> exige mas edge ahi.
+        # Asi no apostamos cuando el spread/slippage/fee se comen la ventaja.
         cost = config.EXEC_COST
-        net_edge = edge - cost
+        fee_ps = fees.fee_per_share(ask) if config.APPLY_FEES_LIVE else 0.0
+        net_edge = edge - cost - fee_ps
         if net_edge < min_edge or edge > config.MAX_EDGE_TRUST:
             return
         if conf is None or conf < config.MIN_CONFIDENCE:
@@ -191,8 +200,10 @@ class StrategyEngine:
         if same_dir >= config.MAX_SAME_DIR_CONCURRENT:
             return
 
-        # Fill conservador: asumimos que pagamos ask+costo, no el ask optimista.
-        ask_eff = ask + cost
+        # Fill conservador: pagamos ask + costo de ejecucion + fee real del taker
+        # (no el ask optimista). El fee queda baked en el precio de entrada -> el PnL
+        # liquidado ya lo descuenta honestamente.
+        ask_eff = ask + cost + fee_ps
         if ask_eff >= 0.99:
             return
         f_star = (p_side - ask_eff) / (1 - ask_eff)

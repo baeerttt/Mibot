@@ -44,9 +44,10 @@ CAPTURE_RAW = False          # guardar mensajes crudos: True solo para depurar (
 # TRADING (PAPER / shadow training) — bankroll ficticio, sin riesgo real
 # ============================================================================
 PAPER_BANKROLL = 10_000.0    # capital ficticio inicial
-# Modo agresivo: opera los 4 activos liquidos (BTC/ETH/SOL/XRP), no solo BTC.
-# Mas mercados = mas muestras = el sistema genetico aprende mas rapido.
-TRADE_ASSETS = ("btc", "eth", "sol", "xrp")
+# Solo BTC/ETH: el barrido fee-real (backtest.py, 1836 mercados) mostro que SOL/XRP
+# sangran (win rate 18-29%, fee=peor liquidez). BTC/ETH son los unicos con edge neto
+# despues de fee. Tradeoff: menos mercados = el sistema genetico aprende mas lento.
+TRADE_ASSETS = ("btc", "eth")
 TRADE_INTERVALS = ("5m", "15m")
 
 # --- Edge y sizing (agresivo: arriesga mas, junta mas datos) ---
@@ -57,7 +58,10 @@ MIN_EDGE = 0.02             # edge minimo para abrir (bajado: mas trades)
 # sigma*sqrt(tau)->0 cerca del cierre + seleccion adversa. Cortado de 0.25 a 0.12.
 MAX_EDGE_TRUST = 0.12
 KELLY_FRACTION = 0.40        # base de Kelly (la mutacion genetica lo sube/baja 0.10-0.50)
-MAX_BET_PCT = 0.05          # tope por apuesta: 5% del bankroll (apuestas mas grandes)
+MAX_BET_PCT = 0.02          # tope por apuesta: 2% del bankroll. Bajado de 5%: corta la
+                            # asimetria de Kelly (no mas apuestas de -$474 justo en la
+                            # zona donde el mercado es eficiente). El barrido fee-real es
+                            # rentable con 0.02; con 0.05 el sizing concentra la perdida.
 MIN_BET = 5.0               # apuesta minima en $
 
 # --- Capa de calibracion isotonica (PAV) ---
@@ -77,6 +81,15 @@ MIN_CONFIDENCE = 0.20        # score minimo para apostar (bajado: menos filtro, 
 # y el sizing de Kelly usa ese precio. Asi no se apuesta cuando el costo se come la ventaja.
 EXEC_COST = 0.01            # 1 centavo (spread BTC/ETH ~1c; ajustar con backtest.py)
 
+# --- Dead-zone alrededor de 0.50 (lever #1 de rentabilidad) ---
+# Cerca de p=0.50 pasan dos cosas malas a la vez: el fee de Polymarket es MAXIMO
+# (1.8%) y el modelo no tiene edge (es moneda al aire). El barrido fee-real
+# (backtest.py, 1836 mercados) mostro que evitar la banda |ask-0.50| < DEAD_ZONE
+# da vuelta el signo del PnL (de -1607 a +4918 en 15m BTC/ETH). La banda 0.07-0.12
+# es una meseta robusta (no un pico de overfit). 0.08 = centro de la meseta.
+# No operamos si el ask del lado elegido cae dentro de [0.50-DEAD_ZONE, 0.50+DEAD_ZONE].
+DEAD_ZONE = 0.08
+
 # --- Comisiones de Polymarket (taker fee, categoria CRIPTO) ---
 # Desde 2026-03-23 Polymarket cobra un fee POR TRADE al taker (Mibot siempre es taker).
 # Formula: fee = shares * p * RATE * (p*(1-p))**EXP. Cripto = la categoria mas cara
@@ -85,7 +98,8 @@ EXEC_COST = 0.01            # 1 centavo (spread BTC/ETH ~1c; ajustar con backtes
 # (default False durante el stress-test para no cambiar el dataset; True en produccion).
 POLYMARKET_FEE_RATE = 0.072
 POLYMARKET_FEE_EXPONENT = 1.0
-APPLY_FEES_LIVE = False     # produccion: poner True (el bot exige edge neto del fee real)
+APPLY_FEES_LIVE = True      # el bot exige edge NETO del fee real del taker y el fill
+                            # paga ask+fee. Cableado en strategy.py (_maybe_bet).
 
 # --- Barandas de riesgo (hard gates) ---
 # Aun en modo agresivo dejamos un circuit-breaker: protege contra un BUG que dispare
@@ -94,7 +108,9 @@ MAX_CONCURRENT = 10         # posiciones abiertas simultaneas (4 activos x 2 int
 # Filtro de correlacion: BTC/ETH/SOL/XRP se mueven juntos. Apostar el mismo lado en
 # varios a la vez = una sola apuesta apalancada a "la cripto sube/baja" (riesgo de
 # ruina). Tope de posiciones simultaneas en la MISMA direccion entre activos.
-MAX_SAME_DIR_CONCURRENT = 2
+MAX_SAME_DIR_CONCURRENT = 1  # bajado de 2: el barrido fee-real mostro que cap=1 baja el
+                             # maxDD ~40% (5188->3060) a costa de algo de PnL. Para un
+                             # track record de vault, el drawdown es lo que importa.
 DAILY_LOSS_LIMIT_PCT = 0.20 # circuit-breaker: si el dia pierde 20% -> stop hasta manana
 SOFT_DRAWDOWN_PCT  = 0.12   # alerta suave antes del hard stop
 MAX_SPREAD = 0.05           # no operar si el spread del lado a comprar supera esto
