@@ -8,6 +8,11 @@ mercados Up/Down de 5/15 min. Recolectamos 3 senales por activo:
                    conviccion; cae + precio sube -> short squeeze/liquidacion.
   - Taker Ratio  : volumen de takers compra/venta. > 1 = compra agresiva.
   - L/S Ratio    : cuentas long vs short (global). Extremos = contrarian.
+  - Funding Rate : termometro del apalancamiento direccional (>0 = longs pagan).
+  - Basis        : (mark - index)/index = premio del perp sobre el spot, lider.
+
+Las liquidaciones (combustible de las cascadas) van por WS aparte: ver
+src/binance_liquidations.py (el forceOrder no tiene endpoint REST publico).
 
 NO se opera con esto todavia. Se LOGUEA como feature candidata para validar con
 diagnose.py si predice el outcome. Si predice -> recien ahi entra a la estrategia.
@@ -18,6 +23,7 @@ Resiliente: cualquier fallo (geo-block, corte) -> devuelve lo que pudo, sin romp
 import aiohttp
 
 FUT_BASE = "https://fapi.binance.com/futures/data"
+FAPI_BASE = "https://fapi.binance.com/fapi/v1"   # mark/index/funding (premiumIndex)
 
 
 async def _get(session, path, params):
@@ -53,6 +59,23 @@ async def fetch_futures(session: aiohttp.ClientSession, symbol: str) -> dict:
                           {"symbol": symbol, "period": "5m", "limit": 1})
         if data:
             out["ls_ratio"] = float(data[0]["longShortRatio"])
+    except Exception:  # noqa: BLE001
+        pass
+    # Funding rate + basis (perp vs spot) en una sola llamada a premiumIndex:
+    #   funding_rate = el termometro del apalancamiento direccional (>0 longs pagan).
+    #   basis = (mark - index)/index = premio del perp sobre el spot; hacia donde
+    #   empuja el capital institucional (lider). mark/index se guardan crudos tambien.
+    try:
+        async with session.get(f"{FAPI_BASE}/premiumIndex",
+                               params={"symbol": symbol}, timeout=10) as r:
+            if r.status == 200:
+                d = await r.json()
+                mark = float(d["markPrice"])
+                index = float(d["indexPrice"])
+                out["funding_rate"] = float(d["lastFundingRate"])
+                out["mark_price"] = mark
+                out["index_price"] = index
+                out["basis"] = (mark - index) / index if index else 0.0
     except Exception:  # noqa: BLE001
         pass
     return out

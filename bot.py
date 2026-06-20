@@ -27,6 +27,7 @@ from src.storage import Storage, now_ms
 from src.state import LiveState
 from src.binance_ws import run_binance_ws
 from src.binance_futures import fetch_futures
+from src.binance_liquidations import LiquidationAccumulator, run_liquidation_ws
 from src.polymarket_ws import run_polymarket_ws
 from src.polymarket_api import discover_markets
 from src.fair_value import VolEstimator
@@ -165,9 +166,10 @@ async def vol_loop(state, vols, stop):
         await sleep_or_stop(stop, 0.5)
 
 
-async def futures_loop(session, storage, symbols, stop):
-    """Recolecta indicadores lider de Binance Futures (OI/taker/L-S) por activo.
-    Solo loguea (feature candidata); dedup por bucket 5m. Resiliente a fallos."""
+async def futures_loop(session, storage, symbols, stop, liq_acc=None):
+    """Recolecta indicadores lider de Binance Futures (OI/taker/L-S/funding/basis)
+    por activo + las liquidaciones del bucket (del acumulador WS). Solo loguea
+    (features candidatas); dedup por bucket 5m. Resiliente a fallos."""
     if not config.COLLECT_FUTURES:
         return
     last_bucket: dict[str, int] = {}
@@ -184,11 +186,18 @@ async def futures_loop(session, storage, symbols, stop):
                 bt = f.get("bucket_ts")
                 if bt and last_bucket.get(sym) != bt:
                     last_bucket[sym] = bt
+                    # liquidaciones del MISMO bucket 5m que cubre oi_delta: [bt-5m, bt]
+                    lb, ls, lc = (liq_acc.snapshot(sym, bt - 300_000)
+                                  if liq_acc else (0.0, 0.0, 0))
                     storage.put("futures", (now_ms(), sym, bt, f.get("oi"),
                                             f.get("oi_delta"), f.get("taker_ratio"),
-                                            f.get("ls_ratio")))
+                                            f.get("ls_ratio"), f.get("funding_rate"),
+                                            f.get("mark_price"), f.get("index_price"),
+                                            f.get("basis"), lb, ls, lc))
             except Exception:  # noqa: BLE001
                 pass
+        if liq_acc:
+            liq_acc.prune()
 
 
 async def recalib_loop(cal, stop):
@@ -356,6 +365,7 @@ async def main(use_tui=True, duration=None):
     engine = StrategyEngine(state, pf, cal, vols, storage)
     stop = asyncio.Event()
 
+    liq_acc = LiquidationAccumulator(symbols)
     async with aiohttp.ClientSession() as session:
         tasks = [
             asyncio.create_task(run_binance_ws(storage, state, symbols, stop)),
@@ -365,7 +375,8 @@ async def main(use_tui=True, duration=None):
             asyncio.create_task(settle_loop(storage, state, pf, cal, engine, stop)),
             asyncio.create_task(strategy_loop(engine, stop)),
             asyncio.create_task(vol_loop(state, vols, stop)),
-            asyncio.create_task(futures_loop(session, storage, symbols, stop)),
+            asyncio.create_task(futures_loop(session, storage, symbols, stop, liq_acc)),
+            asyncio.create_task(run_liquidation_ws(liq_acc, stop, config.QUIET)),
             asyncio.create_task(recalib_loop(cal, stop)),
             asyncio.create_task(equity_loop(pf, stop)),
             asyncio.create_task(lock_loop(stop)),

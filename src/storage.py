@@ -66,14 +66,21 @@ CREATE INDEX IF NOT EXISTS idx_spot_sym_ts ON spot_tick(symbol, ts);
 -- LIDER: el order flow de futuros suele anticipar al spot 1-5 min. Se RECOLECTA
 -- como feature candidata (no se opera con esto todavia; se valida con diagnose).
 CREATE TABLE IF NOT EXISTS futures_tick (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts          INTEGER,      -- reloj local
-    symbol      TEXT,
-    bucket_ts   INTEGER,      -- timestamp del bucket 5m de Binance (dedup)
-    oi          REAL,         -- open interest agregado
-    oi_delta    REAL,         -- cambio relativo de OI vs bucket anterior
-    taker_ratio REAL,         -- buy/sell volume ratio de takers (>1 = compra agresiva)
-    ls_ratio    REAL          -- long/short account ratio global (contrarian)
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts           INTEGER,      -- reloj local
+    symbol       TEXT,
+    bucket_ts    INTEGER,      -- timestamp del bucket 5m de Binance (dedup)
+    oi           REAL,         -- open interest agregado
+    oi_delta     REAL,         -- cambio relativo de OI vs bucket anterior
+    taker_ratio  REAL,         -- buy/sell volume ratio de takers (>1 = compra agresiva)
+    ls_ratio     REAL,         -- long/short account ratio global (contrarian)
+    funding_rate REAL,         -- termometro del apalancamiento direccional (>0 longs pagan)
+    mark_price   REAL,         -- precio mark del perp
+    index_price  REAL,         -- precio index (spot subyacente)
+    basis        REAL,         -- (mark - index)/index = premio perp sobre spot (lider)
+    liq_buy_usd  REAL,         -- USD de shorts liquidados en el bucket (presion arriba)
+    liq_sell_usd REAL,         -- USD de longs liquidados en el bucket (presion abajo)
+    liq_count    INTEGER       -- cantidad de liquidaciones en el bucket
 );
 CREATE INDEX IF NOT EXISTS idx_fut_sym_ts ON futures_tick(symbol, ts);
 
@@ -145,7 +152,8 @@ _INSERTS = {
     "spot": "INSERT INTO spot_tick(ts,symbol,bid,ask,mid) VALUES(?,?,?,?,?)",
     "futures": (
         "INSERT INTO futures_tick(ts,symbol,bucket_ts,oi,oi_delta,taker_ratio,"
-        "ls_ratio) VALUES(?,?,?,?,?,?,?)"
+        "ls_ratio,funding_rate,mark_price,index_price,basis,liq_buy_usd,"
+        "liq_sell_usd,liq_count) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
     ),
     "market": (
         "INSERT OR REPLACE INTO markets(slug,condition_id,asset,interval,"
@@ -200,8 +208,20 @@ class Storage:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.executescript(SCHEMA)
+        self._migrate(conn)
         conn.commit()
         return conn
+
+    def _migrate(self, conn):
+        """Agrega columnas nuevas a tablas ya existentes. ALTER TABLE ADD COLUMN es
+        O(1) en sqlite (solo metadata, no reescribe la tabla) -> seguro en DB grande."""
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(futures_tick)")}
+        for name, typ in (("funding_rate", "REAL"), ("mark_price", "REAL"),
+                          ("index_price", "REAL"), ("basis", "REAL"),
+                          ("liq_buy_usd", "REAL"), ("liq_sell_usd", "REAL"),
+                          ("liq_count", "INTEGER")):
+            if name not in cols:
+                conn.execute(f"ALTER TABLE futures_tick ADD COLUMN {name} {typ}")
 
     def put(self, kind: str, row: tuple):
         """No-bloqueante: encola una fila para escribir."""

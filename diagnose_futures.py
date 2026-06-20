@@ -55,10 +55,11 @@ def spot_at(conn, symbol, ts):
 def build():
     conn = ro()
     fut = conn.execute(
-        "SELECT symbol, bucket_ts, oi_delta, taker_ratio, ls_ratio "
+        "SELECT symbol, bucket_ts, oi_delta, taker_ratio, ls_ratio, funding_rate, basis, "
+        "liq_buy_usd, liq_sell_usd, liq_count "
         "FROM futures_tick WHERE bucket_ts IS NOT NULL ORDER BY bucket_ts ASC").fetchall()
     recs = []
-    for symbol, b, oid, tk, ls in fut:
+    for symbol, b, oid, tk, ls, fr, basis, lbuy, lsell, lcnt in fut:
         if b is None:
             continue
         o = spot_at(conn, symbol, b)
@@ -70,8 +71,14 @@ def build():
         out5 = ("up" if c5 > o else "down") if (c5 is not None and c5 != o) else None
         out15 = ("up" if c15 > o else "down") if (c15 is not None and c15 != o) else None
         recent = ("up" if o > pre else "down") if (pre is not None and o != pre) else None
+        # imbalance de liquidaciones: buy(shorts liquidados) - sell(longs liquidados)
+        liq_imb = None
+        if lbuy is not None or lsell is not None:
+            liq_imb = (lbuy or 0.0) - (lsell or 0.0)
         recs.append({"symbol": symbol, "oi_delta": oid, "taker_ratio": tk,
-                     "ls_ratio": ls, "out5": out5, "out15": out15, "recent_dir": recent})
+                     "ls_ratio": ls, "funding_rate": fr, "basis": basis,
+                     "liq_imbalance": liq_imb, "out5": out5, "out15": out15,
+                     "recent_dir": recent})
     conn.close()
     return recs
 
@@ -145,6 +152,9 @@ FEATS = [
     ("taker_ratio", 1.0, "up", "Taker Ratio (>1 = compra agresiva -> UP)"),
     ("oi_delta", 0.0, "up", "OI Delta (>0 = OI sube -> conviccion)"),
     ("ls_ratio", None, "down", "L/S Ratio (alto = muchos long -> contrarian DOWN)"),
+    ("funding_rate", None, "down", "Funding Rate (alto = longs apalancados -> contrarian DOWN)"),
+    ("basis", 0.0, "up", "Basis perp-spot (>0 = premio del perp -> presion UP)"),
+    ("liq_imbalance", 0.0, "up", "Liq imbalance buy-sell (>0 = shorts liquidados -> UP)"),
 ]
 
 
